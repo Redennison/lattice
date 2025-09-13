@@ -16,15 +16,7 @@ Slack Thread → MCP Server → Deimos Router → Jira + GitHub
 ## Detailed Flow
 
 ### Phase 1: Slack Ingestion
-1. **User Action**: Types `/ticket` command in Slack with bug description
-2. **Slack App**: Captures conversation, thread messages, and attachments
-3. **Initial LLM**: Parses conversation to extract:
-   - Initial summary
-   - Detected keywords
-   - Mentioned files
-   - Error messages
-   - User intent
-   - Urgency indicators
+...
 
 ### Phase 2: Analysis with Deimos Router
 **Tool**: `analyze_request.py`
