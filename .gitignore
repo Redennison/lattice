@@ -1,4 +1,4 @@
 .env
 .env.example
 .requirements.txt
-.secrets.json.example
+secrets.json.example
