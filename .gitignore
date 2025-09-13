@@ -1,4 +1,6 @@
 .env
+.venv
 .env.example
-.requirements.txt
-secrets.json.example
+test_deimos_routing.py
+requirements.txt
+secrets.json

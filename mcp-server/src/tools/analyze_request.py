@@ -12,7 +12,7 @@ from models.schemas import (
     AnalysisRequest, SlackContext, ParsedSlackInfo,
     AnalysisResult, JiraTicketContent, IssueType, Severity
 )
-from services.deimos_route import DeimosRouter
+from services.deimos_router_service import route_request
 from utils.logger import logger
 
 async def analyze_request_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -213,36 +213,23 @@ def _calculate_confidence(complexity_factors: Dict[str, Any]) -> float:
     return min(confidence, 1.0)
 
 async def _route_to_optimal_llm(request: AnalysisRequest, routing_params: Dict[str, Any]) -> JiraTicketContent:
-
     """
     Routes to the optimal LLM using Deimos Router for Jira ticket creation.
     
     This is where the magic happens - Deimos intelligently selects the best model
     based on multiple factors to optimize cost and quality.
     """
-    router = DeimosRouter()
-    
     # Create sophisticated prompt for Jira ticket generation
     prompt = _create_jira_generation_prompt(request, routing_params)
     
-    # Determine cost priority based on urgency and complexity
-    cost_priority = _determine_cost_priority(request, routing_params)
-    
-    # Route through Deimos with rich metadata for intelligent decision
-    response = await router.route_ticket_analysis_request(
+    # Route through Deimos Router service
+    response = await route_request(
         prompt=prompt,
+        task=routing_params.get('task_type', 'ticket_analysis'),
         context=request.slack_context.conversation,
-        task=routing_params['task_type'],
-        cost_priority=cost_priority,
-        metadata={
-            'detected_languages': routing_params['detected_languages'],
-            'complexity_factors': routing_params['complexity_factors'],
-            'effort_estimate': routing_params['effort_estimate'],
-            'severity': request.severity.value,
-            'parsed_keywords': request.parsed_info.detected_keywords,
-            'error_messages': request.parsed_info.error_messages,
-            'mentioned_files': request.parsed_info.mentioned_files
-        }
+        max_tokens=2500,
+        temperature=0.2,
+        explain=False
     )
     
     # Parse the LLM response into structured Jira ticket
@@ -250,10 +237,13 @@ async def _route_to_optimal_llm(request: AnalysisRequest, routing_params: Dict[s
     
     # Store routing decision metadata
     routing_params['metadata']['selected_model'] = response.selected_model
-    routing_params['metadata']['routing_reason'] = response.reasoning
-    routing_params['metadata']['estimated_cost'] = response.estimated_cost
+    if response.routing_metadata:
+        routing_params['metadata']['routing_metadata'] = response.routing_metadata
+    if response.estimated_cost:
+        routing_params['metadata']['estimated_cost'] = response.estimated_cost
     
-    logger.info(f"Routed to {response.selected_model} (cost: ${response.estimated_cost:.4f})")
+    cost_str = f"${response.estimated_cost:.4f}" if response.estimated_cost else "N/A"
+    logger.info(f"Routed to {response.selected_model} (cost: {cost_str})")
     
     return jira_content
 
@@ -317,9 +307,9 @@ IMPORTANT:
     return prompt
 
 def _determine_cost_priority(request: AnalysisRequest, routing_params: Dict[str, Any]) -> Optional[str]:
-
     """
     Determines cost priority based on urgency and severity.
+    Note: This is now handled internally by the router's task rules.
     """
     # High urgency or critical issues get quality priority
     if request.severity == Severity.CRITICAL:
@@ -338,7 +328,8 @@ def _parse_llm_response_to_jira(response: Any, request: AnalysisRequest) -> Jira
     try:
         # Parse JSON response from LLM
         import json
-        ticket_data = json.loads(response.response)
+        # Response is already a string, try to parse it as JSON
+        ticket_data = json.loads(response.response if hasattr(response, 'response') else str(response))
         
         # Map issue type string to enum
         issue_type_map = {
