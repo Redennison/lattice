@@ -12,7 +12,7 @@ from models.schemas import (
     AnalysisResult, FixPlan, CodeChange,
     JiraTicketContent
 )
-from services.deimos_route import DeimosRouter
+from services.deimos_router_service import route_request
 from services.repo_indexer import RepoIndexer
 from utils.logger import logger
 
@@ -176,8 +176,6 @@ async def _generate_fix_with_deimos(jira_ticket: Dict[str, Any], codebase_contex
     Returns:
         FixPlan with code changes
     """
-    router = DeimosRouter()
-    
     # Determine task complexity for routing
     task_complexity = _determine_fix_complexity(codebase_context)
     
@@ -187,18 +185,14 @@ async def _generate_fix_with_deimos(jira_ticket: Dict[str, Any], codebase_contex
     # Determine cost priority based on complexity
     cost_priority = 'high_quality' if task_complexity == 'complex' else 'balanced'
     
-    # Route to optimal LLM
-    response = await router.route_request(
+    # Route to optimal LLM using the service
+    response = await route_request(
         prompt=prompt,
         task='coding',  # This is a coding task
-        cost_priority=cost_priority,
-        metadata={
-            'fix_complexity': task_complexity,
-            'files_to_modify': len(codebase_context['files']),
-            'has_tests': bool(codebase_context['test_coverage']),
-            'patterns_found': codebase_context['patterns_found'],
-            'confidence_score': confidence
-        }
+        context=str(codebase_context),
+        max_tokens=3000,
+        temperature=0.1,
+        explain=False
     )
     
     # Parse the LLM response into FixPlan
