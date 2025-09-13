@@ -4,3 +4,6 @@
 test_deimos_routing.py
 requirements.txt
 secrets.json
+test_deimos_api.py
+*__pycache__
+logs
