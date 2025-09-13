@@ -48,8 +48,8 @@ class JiraService:
     logger.info(f"Creating Jira issue: {analysis.title}")
     
     try:
-      # Build issue description in ADF (Atlassian Document Format)
-      description = self._build_description(analysis)
+      # Build issue description as plain text
+      description = self._build_description_text(analysis)
       
       # Prepare issue data
       issue_data = {
@@ -86,6 +86,40 @@ class JiraService:
       logger.error(f"Failed to create Jira issue: {str(e)}")
       return None
   
+  def _build_description_text(self, analysis: AnalysisResult) -> str:
+    """
+    Build Jira description as plain text.
+    
+    Args:
+      analysis: Analysis result
+    
+    Returns:
+      Plain text description
+    """
+    description_parts = [
+      analysis.summary,
+      "",
+      "### Acceptance Criteria",
+    ]
+    
+    for criteria in analysis.acceptance_criteria:
+      description_parts.append(f"- {criteria.description}")
+    
+    description_parts.extend([
+      "",
+      "### Code Areas to Investigate",
+    ])
+    
+    for query in analysis.code_queries:
+      description_parts.append(f"- `{query}`")
+    
+    description_parts.extend([
+      "",
+      f"*Analysis Confidence: {analysis.confidence:.1%}*"
+    ])
+    
+    return "\n".join(description_parts)
+
   def _build_description(self, analysis: AnalysisResult) -> Dict[str, Any]:
     """
     Build Jira description in ADF format.
