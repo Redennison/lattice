@@ -1,170 +1,198 @@
 """
 GitHub Branch and PR Tool
 
-This MCP tool creates branches, applies code changes, and opens pull requests.
+This MCP tool creates branches, applies code changes from fix plan, and opens
+pull requests with links to Jira issues.
 """
 
-import os
 from typing import Dict, Any
 from datetime import datetime
-from models.ticket import FixPlan, JiraIssue, GitHubPR
-from services.github_service import github_service
+
+from models.schemas import FixPlan, PullRequest, CodeChange
+from services.github_service import GitHubService
 from utils.logger import logger
 
-async def github_branch_and_pr_tool(arguments: Dict[str, Any]) -> GitHubPR:
-  """
-  Create a branch, apply fixes, and open a pull request.
-  
-  Args:
-    arguments: Contains fix_plan, jira_issue, and optional base_branch
+async def github_branch_and_pr_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Creates a branch, applies fixes from plan, and opens a pull request.
     
-  Returns:
-    GitHubPR with pull request details
-  """
-  logger.info("Creating GitHub branch and PR...")
-  
-  # Parse arguments
-  fix_plan_data = arguments.get("fix_plan", {})
-  jira_issue_data = arguments.get("jira_issue", {})
-  base_branch = arguments.get("base_branch", "main")
-  
-  if not fix_plan_data:
-    raise ValueError("fix_plan is required")
-  
-  # Convert to models
-  try:
-    fix_plan = FixPlan(**fix_plan_data)
-    jira_issue = JiraIssue(**jira_issue_data) if jira_issue_data else None
-  except Exception as e:
-    logger.error(f"Invalid input format: {str(e)}")
-    raise ValueError(f"Invalid input: {str(e)}")
-  
-  # Generate branch name
-  timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-  jira_key = jira_issue.key if jira_issue else "auto-fix"
-  branch_name = f"auto/{jira_key}-{timestamp}"
-  
-  # Create branch
-  success = await github_service.create_branch(branch_name, base_branch)
-  if not success:
-    raise Exception(f"Failed to create branch {branch_name}")
-  
-  # Apply code changes
-  if fix_plan.diffs:
-    file_changes = []
+    Args:
+        arguments: Contains fix_plan from plan_fix and jira_issue from jira_create_issue
+        
+    Returns:
+        PullRequest details as dictionary
+    """
+    logger.info("Creating GitHub branch and PR...")
     
-    for diff in fix_plan.diffs:
-      # For hackathon demo, we'll apply simple changes
-      # In production, this would parse git diffs and apply them properly
-      new_content = _apply_diff_to_content(diff)
-      
-      file_changes.append({
-        "path": diff.path,
-        "content": new_content
-      })
+    # Parse arguments
+    fix_plan_data = arguments.get("fix_plan", {})
+    jira_issue_data = arguments.get("jira_issue", {})
+    base_branch = arguments.get("base_branch", "main")
+    repo_url = arguments.get("repo_url", "")
     
-    success = await github_service.apply_changes(
-      branch_name, 
-      file_changes, 
-      fix_plan.commit_message
+    if not fix_plan_data:
+        raise ValueError("fix_plan is required")
+    
+    # Extract data from fix plan
+    changes = [CodeChange(**c) for c in fix_plan_data.get("changes", [])]
+    summary = fix_plan_data.get("summary", "Automated fix")
+    root_cause = fix_plan_data.get("root_cause", "")
+    test_plan = fix_plan_data.get("test_plan", [])
+    risks = fix_plan_data.get("risks", [])
+    
+    # Extract Jira info
+    jira_key = jira_issue_data.get("key", "")
+    jira_url = jira_issue_data.get("url", "")
+    
+    # Initialize GitHub service
+    github_service = GitHubService(repo_url)
+    
+    # Generate branch name
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    branch_suffix = jira_key if jira_key else "fix"
+    branch_name = f"auto/{branch_suffix}-{timestamp}"
+    
+    # Create branch
+    branch_created = await github_service.create_branch(branch_name, base_branch)
+    if not branch_created:
+        raise Exception(f"Failed to create branch {branch_name}")
+    
+    logger.info(f"Created branch: {branch_name}")
+    
+    # Apply code changes
+    if changes:
+        for change in changes:
+            try:
+                if change.change_type == "create":
+                    await github_service.create_file(
+                        branch_name,
+                        change.file_path,
+                        change.new_content,
+                        f"Create {change.file_path}: {change.description}"
+                    )
+                elif change.change_type == "delete":
+                    await github_service.delete_file(
+                        branch_name,
+                        change.file_path,
+                        f"Delete {change.file_path}: {change.description}"
+                    )
+                else:  # modify
+                    await github_service.update_file(
+                        branch_name,
+                        change.file_path,
+                        change.new_content,
+                        f"Update {change.file_path}: {change.description}"
+                    )
+                
+                logger.info(f"Applied change to {change.file_path}")
+                
+            except Exception as e:
+                logger.error(f"Failed to apply change to {change.file_path}: {e}")
+                # Continue with other changes
+    
+    # Create pull request
+    pr_title = _generate_pr_title(jira_key, summary)
+    pr_body = _generate_pr_body(
+        summary=summary,
+        root_cause=root_cause,
+        changes=changes,
+        test_plan=test_plan,
+        risks=risks,
+        jira_key=jira_key,
+        jira_url=jira_url
     )
     
-    if not success:
-      raise Exception("Failed to apply code changes")
-  
-  # Create pull request
-  pr_title = f"[{jira_issue.key}] {fix_plan.commit_message}" if jira_issue else fix_plan.commit_message
-  pr_body = _build_pr_description(fix_plan, jira_issue)
-  
-  github_pr = await github_service.create_pull_request(
-    branch_name,
-    pr_title,
-    pr_body,
-    base_branch
-  )
-  
-  if not github_pr:
-    raise Exception("Failed to create pull request")
-  
-  logger.info(f"Created PR #{github_pr.number}: {pr_title}")
-  return github_pr
-
-def _apply_diff_to_content(diff) -> str:
-  """
-  Apply a diff to generate new file content.
-  For hackathon demo, this creates simple fixed content.
-  
-  Args:
-    diff: CodeDiff object
+    pr_data = await github_service.create_pull_request(
+        branch_name=branch_name,
+        title=pr_title,
+        body=pr_body,
+        base_branch=base_branch
+    )
     
-  Returns:
-    New file content
-  """
-  # Mock implementation for demo
-  # In production, this would parse the git diff and apply changes
-  
-  if "cart" in diff.path.lower():
-    return """const express = require('express');
-const CartService = require('../services/cart');
-
-const router = express.Router();
-
-router.post('/cart', async (req, res) => {
-  try {
-    const { cartId, items } = req.body;
+    if not pr_data:
+        raise Exception("Failed to create pull request")
     
-    // Added null check for cartId
-    if (!cartId) {
-      return res.status(400).json({ error: 'cartId is required' });
+    logger.info(f"Created PR #{pr_data['number']}: {pr_title}")
+    
+    # Return PullRequest as dictionary
+    return {
+        "pr_number": pr_data["number"],
+        "pr_url": pr_data["html_url"],
+        "branch_name": branch_name,
+        "base_branch": base_branch,
+        "title": pr_title,
+        "body": pr_body,
+        "status": "open",
+        "created_at": datetime.now().isoformat(),
+        "jira_key": jira_key
     }
-    
-    const result = await CartService.updateCart(cartId, items);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
-module.exports = router;"""
-  
-  # Default content for other files
-  return f"// Fixed content for {diff.path}\n// {diff.description}\n"
+def _generate_pr_title(jira_key: str, summary: str) -> str:
+    """
+    Generates a PR title with Jira key if available.
+    """
+    if jira_key:
+        return f"[{jira_key}] {summary[:80]}"
+    return summary[:100]
 
-def _build_pr_description(fix_plan: FixPlan, jira_issue: JiraIssue = None) -> str:
-  """
-  Build pull request description.
-  
-  Args:
-    fix_plan: Fix plan with changes
-    jira_issue: Optional Jira issue
+def _generate_pr_body(
+    summary: str,
+    root_cause: str,
+    changes: list,
+    test_plan: list,
+    risks: list,
+    jira_key: str = "",
+    jira_url: str = ""
+) -> str:
+    """
+    Generates a comprehensive PR description.
+    """
+    sections = []
     
-  Returns:
-    Formatted PR description
-  """
-  description = []
-  
-  # Link to Jira issue
-  if jira_issue:
-    description.append(f"## 🎫 Related Issue")
-    description.append(f"Fixes [{jira_issue.key}]({jira_issue.url})")
-    description.append("")
-  
-  # Changes summary
-  description.append("## 🔧 Changes")
-  for diff in fix_plan.diffs:
-    description.append(f"- **{diff.path}**: {diff.description}")
-  description.append("")
-  
-  # Implementation checklist
-  description.append("## ✅ Checklist")
-  for item in fix_plan.checklist:
-    description.append(f"- [ ] {item}")
-  description.append("")
-  
-  # Metadata
-  description.append("## 📊 Metadata")
-  description.append(f"- **Confidence**: {fix_plan.confidence:.1%}")
-  description.append(f"- **Estimated Effort**: {fix_plan.estimated_effort}")
-  description.append(f"- **Auto-generated**: Yes")
-  
-  return "\n".join(description)
+    # Jira link
+    if jira_key and jira_url:
+        sections.append("## 🎫 Jira Issue")
+        sections.append(f"[{jira_key}]({jira_url})")
+        sections.append("")
+    
+    # Summary
+    sections.append("## 📝 Summary")
+    sections.append(summary)
+    sections.append("")
+    
+    # Root cause
+    if root_cause:
+        sections.append("## 🔍 Root Cause")
+        sections.append(root_cause)
+        sections.append("")
+    
+    # Changes
+    if changes:
+        sections.append("## 🔧 Changes Made")
+        for change in changes:
+            emoji = "➕" if change.change_type == "create" else "✏️" if change.change_type == "modify" else "❌"
+            sections.append(f"{emoji} **{change.file_path}**")
+            if change.description:
+                sections.append(f"   - {change.description}")
+        sections.append("")
+    
+    # Test plan
+    if test_plan:
+        sections.append("## 🧪 Test Plan")
+        for step in test_plan:
+            sections.append(f"- [ ] {step}")
+        sections.append("")
+    
+    # Risks
+    if risks:
+        sections.append("## ⚠️ Risks")
+        for risk in risks:
+            sections.append(f"- {risk}")
+        sections.append("")
+    
+    # Footer
+    sections.append("---")
+    sections.append("*This PR was automatically generated by Lattice*")
+    sections.append(f"*Generated at: {datetime.now().isoformat()}*")
+    
+    return "\n".join(sections)

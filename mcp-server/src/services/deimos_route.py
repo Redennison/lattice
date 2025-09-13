@@ -33,58 +33,105 @@ class LatticeDeimosRouter:
         # Clear any existing routers
         clear_routers()
         
-        # Create routing rules for different tasks
+        # Rule 1: Task-based routing with diverse model selection
+        # Using different providers for cost optimization
         task_rule = TaskRule(
-            name="lattice-task-router",
+            name="task-router",
             rules={
-                # Ticket analysis - balance cost and quality
-                'analysis': 'openai/gpt-4o-mini',
-                'ticket_analysis': 'openai/gpt-4o-mini',
+                # Critical tasks - use best models regardless of cost
+                'ticket_analysis': 'anthropic/claude-3-5-sonnet-latest',  # Best for structured analysis
+                'coding': 'anthropic/claude-3-5-sonnet-latest',          # Excellent at code generation
+                'debugging': 'openai/gpt-4o',                            # Strong debugging capabilities
+                'architecture': 'anthropic/claude-3-opus-latest',        # Best for system design
                 
-                # Code-related tasks - use more powerful models
-                'coding': 'openai/gpt-4o',
-                'code_generation': 'openai/gpt-4o',
-                'code_review': 'openai/gpt-4o',
+                # Medium complexity tasks - balance cost and quality
+                'summarization': 'anthropic/claude-3-haiku',             # Fast, cheap, good summaries
+                'classification': 'google/gemini-1.5-flash',             # Very fast classification
+                'extraction': 'mistral/mistral-small-latest',            # Good for data extraction
+                'translation': 'google/gemini-1.5-flash',                # Good multilingual support
                 
-                # Simple tasks - use cost-effective models
-                'summarization': 'openai/gpt-4o-mini',
-                'classification': 'openai/gpt-4o-mini',
-                'extraction': 'openai/gpt-4o-mini',
+                # Simple tasks - optimize for cost
+                'simple_query': 'openai/gpt-4o-mini',                    # Cheap and reliable
+                'formatting': 'meta-llama/llama-3.1-8b-instruct',        # Open source, very cheap
+                'basic_qa': 'mistral/mistral-tiny',                      # Extremely cost-effective
                 
-                # Creative tasks - use balanced model
-                'creative': 'openai/gpt-4o-mini',
-                
-                # Complex analysis - use powerful model
-                'complex_analysis': 'openai/gpt-4o'
+                # Complex analysis - use specialized models
+                'complex_analysis': 'openai/o1-preview',                 # Best reasoning model
+                'math': 'openai/o1-mini',                                # Optimized for math/logic
+                'creative': 'anthropic/claude-3-5-sonnet-latest',        # Creative writing
             }
         )
         
-        # Code detection rule - if code is detected, route to better model
+        # Rule 2: Code detection with provider-specific strengths
+        # Different models excel at different programming tasks
         code_rule = CodeRule(
-            name="lattice-code-detector",
-            code='openai/gpt-4o',  # Use GPT-4o for code-heavy requests
-            not_code=task_rule     # Otherwise use task-based routing
+            name="code-detector",
+            code=TaskRule(
+                name="code-type-router",
+                rules={
+                    # Route based on detected programming language/framework
+                    'python': 'anthropic/claude-3-5-sonnet-latest',      # Excellent Python support
+                    'javascript': 'openai/gpt-4o',                       # Strong JS/TS support
+                    'rust': 'anthropic/claude-3-5-sonnet-latest',        # Good at systems programming
+                    'sql': 'openai/gpt-4o',                              # Strong SQL generation
+                    'react': 'openai/gpt-4o',                            # React/frontend expertise
+                    'backend': 'anthropic/claude-3-5-sonnet-latest',     # Backend architecture
+                    'devops': 'openai/gpt-4o',                           # DevOps/infrastructure
+                    'default': 'anthropic/claude-3-5-sonnet-latest'      # General code tasks
+                }
+            ),
+            not_code=task_rule  # Fall back to task routing if no code
         )
         
-        # Message length rule for fallback routing
-        length_rule = MessageLengthRule(
-            name="lattice-length-router",
-            short_threshold=200,   # Short messages
-            long_threshold=1500,   # Long messages
-            short_model='openai/gpt-4o-mini',
-            medium_model='openai/gpt-4o-mini', 
-            long_model='openai/gpt-4o'  # Use better model for complex requests
+        # Rule 3: Complexity-based routing
+        # Analyze message complexity beyond just length
+        complexity_rule = MessageLengthRule(
+            name="complexity-router",
+            short_threshold=300,          # < 300 chars = simple
+            long_threshold=1500,          # > 1500 chars = complex
+            
+            # Simple messages - use cheapest effective models
+            short_model='mistral/mistral-tiny',           # $0.00025/1K tokens
+            
+            # Medium complexity - balance cost and capability  
+            medium_model='anthropic/claude-3-haiku',      # $0.00025/$0.00125 per 1K tokens
+            
+            # Complex messages - use powerful models
+            long_model='anthropic/claude-3-5-sonnet-latest'  # Best overall performance
         )
         
-        # Create the main Lattice router
+        # Rule 4: Cost priority override
+        # Allow dynamic cost optimization based on user preferences
+        cost_priority_rule = TaskRule(
+            name="cost-priority-router",
+            rules={
+                # Ultra-low cost mode (for high volume, low priority tasks)
+                'ultra_low_cost': 'meta-llama/llama-3.1-8b-instruct',
+                
+                # Low cost mode (good balance)
+                'low_cost': 'mistral/mistral-small-latest',
+                
+                # Balanced mode (default)
+                'balanced': 'anthropic/claude-3-haiku',
+                
+                # High quality mode (when accuracy is critical)
+                'high_quality': 'anthropic/claude-3-5-sonnet-latest',
+                
+                # Maximum quality (cost no object)
+                'max_quality': 'openai/o1-preview'
+            }
+        )
+        
+        # Create router with rules evaluated in priority order
         lattice_router = Router(
             name="lattice-router",
             rules=[
-                code_rule,    # First check for code
-                task_rule,    # Then check task type
-                length_rule   # Finally check message length
+                code_rule,           # First: Check for code (most specific)
+                cost_priority_rule,  # Second: Check for explicit cost preference
+                task_rule,          # Third: Route by task type
+                complexity_rule     # Fourth: Fall back to complexity analysis
             ],
-            default_model="openai/gpt-4o-mini"  # Cost-effective default
+            default_model="anthropic/claude-3-haiku"  # Safe, cost-effective default
         )
         
         # Register the router
