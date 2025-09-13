@@ -17,3 +17,7 @@ pytest-asyncio==0.21.1
 requests==2.31.0
 aiohttp==3.9.0
 deimos-router @ git+https://github.com/withmartian/deimos-router.git
+cohere
+slack-bolt==1.18.1
+certifi==2023.11.17
+flask==3.0.0
