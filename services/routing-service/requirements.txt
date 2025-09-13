@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-
-# deimoos importable
--e ../deimos-router
