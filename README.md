@@ -1,4 +1,4 @@
-# Lattice - Complete Flow Documentation
+# Lattice - Connect. Resolve. Evolve.
 
 <p align="center">
 <img width="300" height="300" alt="LatticeLogo" src="https://github.com/user-attachments/assets/ea08af00-a1c6-4562-b498-c09e1b5178d2" />
