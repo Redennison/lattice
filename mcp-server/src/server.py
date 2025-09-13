@@ -8,7 +8,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
   Resource,
-  Tools,
+  Tool,
   TextContent,
   ImageContent,
   EmbeddedResource,
@@ -25,42 +25,29 @@ server = Server("lattice")
 async def handle_list_tools() -> list[Tool]:
   return [
     Tool(
-      name="analyze_request"
+      name="analyze_request",
       description="Analyze a ticket request and extract structured information",
       inputSchema={
         "type": "object",
         "properties": {
-          "title": "string",
-          "description": "Ticket title",
+          "title": {"type": "string", "description": "Ticket title"},
+          "description": {"type": "string", "description": "Detailed ticket description"},
+          "severity": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "Ticket severity level"
+          },
+          "labels": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Ticket labels"
+          },
+          "user_id": {"type": "string", "description": "Slack user ID"},
+          "channel_id": {"type": "string", "description": "Slack channel ID"},
+          "autofix_enabled": {"type": "boolean", "description": "Whether to attempt automatic fix"}
         },
-        "description": {
-          "type": "string",
-          "description": "Detailed ticket description"
-        },
-        "severity": {
-          "type": "string",
-          "enum": ["high", "medium", "low"]
-          "description": "Ticket severity level"
-        },
-        "labels": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "Ticket labels"
-        },
-        "user_id": {
-          "type": "string",
-          "description": "Slack user ID"
-        },
-        "channel_id": {
-          "type": "string",
-          "description": "Slack channel ID"
-        },
-        "autofix_enabled": {
-          "type": "boolean",
-          "description": "Whether to attempt automatic fix"
-        }
+        "required": ["title", "description", "user_id", "channel_id"]
       },
-      "required": ["title", "description", "user_id", "channel_id"]
     )
   ]
 
@@ -85,7 +72,7 @@ async def handle_list_resources() -> list[Resource]:
 
 @server.read_resource()
 async def handle_read_resource(uri: str) -> str:
-  raise NotImplementedError("Resoruce reading not yet implemented")
+  raise NotImplementedError("Resource reading not yet implemented")
 
 async def main():
   logger.info("Starting MCP server...")
