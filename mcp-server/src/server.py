@@ -33,23 +33,64 @@ async def handle_list_tools() -> list[Tool]:
       inputSchema={
         "type": "object",
         "properties": {
-          "title": {"type": "string", "description": "Ticket title"},
-          "description": {"type": "string", "description": "Detailed ticket description"},
+          "slack_context": {
+            "type": "object",
+            "description": "Raw Slack conversation context",
+            "properties": {
+              "conversation": {"type": "string", "description": "Full conversation text"},
+              "thread_messages": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Thread messages if applicable"
+              },
+              "channel_id": {"type": "string", "description": "Slack channel ID"},
+              "user_id": {"type": "string", "description": "Slack user ID"},
+              "timestamp": {"type": "string", "description": "Message timestamp"},
+              "attachments": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Images, files, etc."
+              }
+            },
+            "required": ["conversation", "channel_id", "user_id", "timestamp"]
+          },
+          "parsed_info": {
+            "type": "object",
+            "description": "Information parsed from Slack by initial LLM",
+            "properties": {
+              "initial_summary": {"type": "string", "description": "Quick summary of the issue"},
+              "detected_keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Key technical terms found"
+              },
+              "mentioned_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Files mentioned in conversation"
+              },
+              "error_messages": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Error messages found"
+              },
+              "user_intent": {"type": "string", "description": "What the user is trying to achieve"},
+              "urgency_indicators": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Words indicating urgency"
+              }
+            },
+            "required": ["initial_summary", "detected_keywords", "mentioned_files", "error_messages", "user_intent", "urgency_indicators"]
+          },
           "severity": {
             "type": "string",
-            "enum": ["high", "medium", "low"],
-            "description": "Ticket severity level"
-          },
-          "labels": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Ticket labels"
-          },
-          "user_id": {"type": "string", "description": "Slack user ID"},
-          "channel_id": {"type": "string", "description": "Slack channel ID"},
-          "autofix_enabled": {"type": "boolean", "description": "Whether to attempt automatic fix"}
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Issue severity level",
+            "default": "medium"
+          }
         },
-        "required": ["title", "description", "user_id", "channel_id"]
+        "required": ["slack_context", "parsed_info"]
       },
     ),
     Tool(
