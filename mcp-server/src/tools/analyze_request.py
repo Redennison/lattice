@@ -292,29 +292,27 @@ def _combine_analysis_results(
   # Boost confidence if we have good technical details
   if extracted.get("has_stack_trace"):
     base_confidence += 0.1
-    if extracted.get("code_hints"):
-      base_confidence += 0.1
-    if extracted.get("endpoints"):
-      base_confidence += 0.1
+  if extracted.get("code_hints"):
+    base_confidence += 0.1
+  if extracted.get("endpoints"):
+    base_confidence += 0.1
     
-    # Cap confidence at 1.0
-    final_confidence = min(base_confidence, 1.0)
+  # Cap confidence at 1.0
+  final_confidence = min(base_confidence, 1.0)
     
-    # Create acceptance criteria objects
-    acceptance_criteria = [
-      AcceptanceCriteria(description=criteria)
-      for criteria in ai_analysis.get("acceptance_criteria", [])
-    ]
+  # Create acceptance criteria objects
+  acceptance_criteria = [
+    AcceptanceCriteria(description=criteria)
+    for criteria in ai_analysis.get("acceptance_criteria", [])
+  ]
     
-    return AnalysisResult(
-      title=ai_analysis.get("improved_title", ticket.title),
-      summary=ai_analysis.get("summary", ticket.description),
-      labels=enhanced_labels,
-      acceptance_criteria=acceptance_criteria,
-      code_queries=combined_queries,
-      confidence=final_confidence,
-      issue_type=ai_analysis.get("issue_type", "Bug"),
-      priority=ai_analysis.get("priority", ticket.severity.value.title()),
-      jira_ticket_content=ai_analysis.get("jira_ticket_content")
-    )
-    
+  return AnalysisResult(
+    title=ai_analysis.get("improved_title", ticket.title),
+    summary=ai_analysis.get("summary", ticket.description),
+    labels=enhanced_labels,
+    acceptance_criteria=acceptance_criteria,
+    code_queries=combined_queries,
+    confidence=final_confidence,
+    issue_type=ai_analysis.get("issue_type", "Bug"),
+    priority=ai_analysis.get("priority", ticket.severity.value.title())
+  )
