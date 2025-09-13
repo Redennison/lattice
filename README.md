@@ -1,6 +1,8 @@
 # Lattice - Complete Flow Documentation
 
-
+<p align="center">
+<img width="300" height="300" alt="LatticeLogo" src="https://github.com/user-attachments/assets/ea08af00-a1c6-4562-b498-c09e1b5178d2" />
+</p>
 
 ## Overview
 Lattice is an intelligent automation system that transforms Slack bug reports into fully implemented code fixes with Jira tickets and GitHub pull requests, using sophisticated LLM routing for cost-effective and high-quality results.
