@@ -34,6 +34,7 @@ class AnalysisResult(BaseModel):
   confidence: float = Field(..., ge=0.0, le=1.0, description="Analysis confidence score")
   issue_type: str = Field(default="Bug", description="Jira issue type")
   priority: str = Field(default="Medium")
+  jira_ticket_content: Optional[str] = Field(None, description="Full formatted Jira ticket content from LLM")
 
 class CodeFile(BaseModel):
   """Information about a code file to modify"""

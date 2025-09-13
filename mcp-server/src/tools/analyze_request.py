@@ -1,20 +1,18 @@
 """
 Analyze Request Tool
 
-This MCP tool takes raw ticket text from Slack and converts it into
-structured data suitable for Jira ticket creation and code analysis.
+This MCP tool takes raw Slack conversation/thread and converts it into
+structured Jira ticket information using Deimos Router for cost-effective LLM selection.
 """
 
 import re
 import os
+import json
 from typing import Dict, Any, List
-from openai import AsyncOpenAI
 
 from models.ticket import TicketRequest, AnalysisResult, AcceptanceCriteria
+from services.deimos_route import route_ticket_analysis_request
 from utils.logger import logger
-
-# Initialize OpenAI client
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 async def analyze_request_tool(arguments: Dict[str, Any]) -> AnalysisResult:
   logger.info("Starting ticket analysis...")
@@ -91,53 +89,86 @@ def _extract_basic_info(ticket: TicketRequest) -> Dict[str, Any]:
 
 async def _ai_analyze_ticket(ticket: TicketRequest) -> Dict[str, Any]:
   """
-  Use AI to analyze the ticket and extract structured information.
+  Use Deimos Router to analyze the Slack conversation/thread and generate Jira ticket information.
   
   Args:
-    ticket: Ticket request data
+    ticket: Ticket request data containing Slack conversation
   
   Returns:
-    Dictionary with AI analysis results
+    Dictionary with AI analysis results formatted for Jira ticket creation
   """
-  prompt = f"""
-  Analyze this bug report and extract structured information:
-    
-    Title: {ticket.title}
-    Description: {ticket.description}
-    Severity: {ticket.severity}
-    
-    Please provide a JSON response with:
-    1. "improved_title": A clear, concise title (max 80 chars)
-    2. "summary": A 2-3 sentence summary for Jira
-    3. "labels": Array of relevant labels (bug, frontend, api, etc.)
-    4. "acceptance_criteria": Array of specific, testable criteria
-    5. "code_queries": Array of search terms to find relevant code
-    6. "confidence": Float 0-1 indicating how well you understand the issue
-    7. "issue_type": "Bug", "Task", or "Story"
-    8. "priority": "High", "Medium", or "Low"
-    
-    Focus on being specific and actionable. If information is unclear, indicate lower confidence.
-    """
-    
+  
+  # Create the prompt for Jira ticket generation
+  jira_prompt = f"""
+You are analyzing a Slack conversation/thread about a bug report to create a Jira ticket. 
+
+Slack Thread/Conversation:
+Title: {ticket.title}
+Description: {ticket.description}
+Severity: {ticket.severity}
+
+Please analyze this conversation and create a properly formatted Jira ticket response with the following structure:
+
+**Summary of Problem:**
+[Provide a clear, concise summary of the issue in 1-2 sentences]
+
+**Acceptance Criteria for Issue:**
+- [Specific, testable criterion 1]
+- [Specific, testable criterion 2]
+- [Additional criteria as needed]
+
+**Issue Type:** [Bug/Task/Story]
+
+**Priority:** [High/Medium/Low]
+
+**Labels:** [Comma-separated relevant labels like: bug, frontend, api, authentication, etc.]
+
+**Affected Components:**
+- [Component/service/file mentioned in the conversation]
+- [Additional components if applicable]
+
+**Steps to Reproduce:** (if mentioned in conversation)
+1. [Step 1]
+2. [Step 2]
+3. [Expected vs Actual behavior]
+
+**Additional Context:**
+[Any relevant technical details, error messages, or context from the Slack thread]
+
+Focus on extracting actionable information from the Slack conversation. If certain details are unclear from the conversation, note that in the ticket for follow-up.
+"""
+  
   try:
-    response = await openai_client.chat.completions.create(
-      model="gpt-4o-mini",  # Use cost-effective model for hackathon
-      messages=[
-        {"role": "system", "content": "You are a senior software engineer analyzing bug reports. Respond only with valid JSON."},
-        {"role": "user", "content": prompt}
-      ],
-      temperature=0.1,  # Low temperature for consistent results
-      max_tokens=1000
+    # Use Deimos Router for cost-effective model selection
+    logger.info("Using Deimos Router for ticket analysis...")
+    
+    routing_response = await route_ticket_analysis_request(
+      prompt=jira_prompt,
+      context=f"Slack conversation analysis for bug: {ticket.title}",
+      explain=True  # Get routing explanation for debugging
     )
-        
-    import json
-    ai_result = json.loads(response.choices[0].message.content)
-    logger.info("AI analysis completed successfully")
-    return ai_result
+    
+    logger.info(f"Deimos selected model: {routing_response.selected_model}")
+    if routing_response.estimated_cost:
+      logger.info(f"Estimated cost: ${routing_response.estimated_cost}")
+    
+    # Log routing explanation if available
+    if routing_response.routing_metadata and 'explain' in routing_response.routing_metadata:
+      for entry in routing_response.routing_metadata['explain']:
+        logger.debug(f"Rule: {entry.get('rule_name')} - Decision: {entry.get('decision')}")
+    
+    # Parse the structured response to extract JSON data
+    ticket_content = routing_response.response
+    
+    # Extract structured information from the formatted response
+    structured_data = _parse_jira_ticket_response(ticket_content, ticket)
+    
+    logger.info("Deimos analysis completed successfully")
+    return structured_data
         
   except Exception as e:
-    logger.warning(f"AI analysis failed: {str(e)}, using fallback")
-    # Fallback analysis if AI fails
+    logger.warning(f"Deimos analysis failed: {str(e)}, using fallback")
+    # Fallback analysis if Deimos fails
     return {
       "improved_title": ticket.title[:80],
       "summary": ticket.description[:200] + "..." if len(ticket.description) > 200 else ticket.description,
@@ -146,7 +177,83 @@ async def _ai_analyze_ticket(ticket: TicketRequest) -> Dict[str, Any]:
       "code_queries": ["error", "bug", "fix"],
       "confidence": 0.3,  # Low confidence for fallback
       "issue_type": "Bug",
-      "priority": ticket.severity.value.title()
+      "priority": ticket.severity.value.title(),
+      "jira_ticket_content": f"**Summary of Problem:**\n{ticket.description}\n\n**Acceptance Criteria for Issue:**\n- Issue is resolved\n- No regression in related functionality"
+    }
+
+def _parse_jira_ticket_response(ticket_content: str, ticket: TicketRequest) -> Dict[str, Any]:
+  """
+  Parse the Jira ticket formatted response from Deimos and extract structured data.
+  
+  Args:
+    ticket_content: The formatted Jira ticket response from LLM
+    ticket: Original ticket request for fallback data
+    
+  Returns:
+    Dictionary with structured analysis results
+  """
+  try:
+    # Extract summary
+    summary_match = re.search(r'\*\*Summary of Problem:\*\*\s*\n(.*?)(?=\n\*\*|\n\n|\Z)', ticket_content, re.DOTALL)
+    summary = summary_match.group(1).strip() if summary_match else ticket.description[:200]
+    
+    # Extract acceptance criteria
+    criteria_match = re.search(r'\*\*Acceptance Criteria for Issue:\*\*\s*\n(.*?)(?=\n\*\*|\n\n|\Z)', ticket_content, re.DOTALL)
+    criteria_text = criteria_match.group(1).strip() if criteria_match else ""
+    criteria_list = [line.strip('- ').strip() for line in criteria_text.split('\n') if line.strip().startswith('-')]
+    
+    if not criteria_list:
+      criteria_list = ["Issue is resolved", "No regression in related functionality"]
+    
+    # Extract issue type
+    issue_type_match = re.search(r'\*\*Issue Type:\*\*\s*([^\n]+)', ticket_content)
+    issue_type = issue_type_match.group(1).strip() if issue_type_match else "Bug"
+    
+    # Extract priority
+    priority_match = re.search(r'\*\*Priority:\*\*\s*([^\n]+)', ticket_content)
+    priority = priority_match.group(1).strip() if priority_match else ticket.severity.value.title()
+    
+    # Extract labels
+    labels_match = re.search(r'\*\*Labels:\*\*\s*([^\n]+)', ticket_content)
+    labels_text = labels_match.group(1).strip() if labels_match else "bug"
+    labels = [label.strip() for label in labels_text.split(',')]
+    
+    # Extract components for code queries
+    components_match = re.search(r'\*\*Affected Components:\*\*\s*\n(.*?)(?=\n\*\*|\n\n|\Z)', ticket_content, re.DOTALL)
+    components_text = components_match.group(1).strip() if components_match else ""
+    components = [line.strip('- ').strip() for line in components_text.split('\n') if line.strip().startswith('-')]
+    
+    # Generate improved title from summary
+    title_words = summary.split()[:10]  # First 10 words
+    improved_title = ' '.join(title_words)
+    if len(improved_title) > 80:
+      improved_title = improved_title[:77] + "..."
+    
+    return {
+      "improved_title": improved_title,
+      "summary": summary,
+      "labels": labels + ticket.labels,  # Combine with existing labels
+      "acceptance_criteria": criteria_list,
+      "code_queries": components + labels,  # Use components and labels as search terms
+      "confidence": 0.8,  # High confidence when using Deimos
+      "issue_type": issue_type,
+      "priority": priority,
+      "jira_ticket_content": ticket_content  # Store the full formatted content
+    }
+    
+  except Exception as e:
+    logger.warning(f"Failed to parse Jira ticket response: {str(e)}")
+    # Return basic structure if parsing fails
+    return {
+      "improved_title": ticket.title[:80],
+      "summary": ticket.description,
+      "labels": ["bug"] + ticket.labels,
+      "acceptance_criteria": ["Issue is resolved"],
+      "code_queries": ["bug", "error"],
+      "confidence": 0.5,
+      "issue_type": "Bug", 
+      "priority": ticket.severity.value.title(),
+      "jira_ticket_content": ticket_content
     }
 
 def _combine_analysis_results(
@@ -186,27 +293,28 @@ def _combine_analysis_results(
   if extracted.get("has_stack_trace"):
     base_confidence += 0.1
     if extracted.get("code_hints"):
-        base_confidence += 0.1
+      base_confidence += 0.1
     if extracted.get("endpoints"):
-        base_confidence += 0.1
+      base_confidence += 0.1
     
     # Cap confidence at 1.0
     final_confidence = min(base_confidence, 1.0)
     
     # Create acceptance criteria objects
     acceptance_criteria = [
-        AcceptanceCriteria(description=criteria)
-        for criteria in ai_analysis.get("acceptance_criteria", [])
+      AcceptanceCriteria(description=criteria)
+      for criteria in ai_analysis.get("acceptance_criteria", [])
     ]
     
     return AnalysisResult(
-        title=ai_analysis.get("improved_title", ticket.title),
-        summary=ai_analysis.get("summary", ticket.description),
-        labels=enhanced_labels,
-        acceptance_criteria=acceptance_criteria,
-        code_queries=combined_queries,
-        confidence=final_confidence,
-        issue_type=ai_analysis.get("issue_type", "Bug"),
-        priority=ai_analysis.get("priority", ticket.severity.value.title())
+      title=ai_analysis.get("improved_title", ticket.title),
+      summary=ai_analysis.get("summary", ticket.description),
+      labels=enhanced_labels,
+      acceptance_criteria=acceptance_criteria,
+      code_queries=combined_queries,
+      confidence=final_confidence,
+      issue_type=ai_analysis.get("issue_type", "Bug"),
+      priority=ai_analysis.get("priority", ticket.severity.value.title()),
+      jira_ticket_content=ai_analysis.get("jira_ticket_content")
     )
     
