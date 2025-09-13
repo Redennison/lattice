@@ -1,5 +1,7 @@
 # Lattice - Complete Flow Documentation
 
+
+
 ## Overview
 Lattice is an intelligent automation system that transforms Slack bug reports into fully implemented code fixes with Jira tickets and GitHub pull requests, using sophisticated LLM routing for cost-effective and high-quality results.
 
