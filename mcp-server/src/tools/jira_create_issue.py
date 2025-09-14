@@ -6,8 +6,8 @@ This MCP tool creates Jira issues from analysis results with formatted content.
 
 from typing import Dict, Any
 from datetime import datetime
-from models.schemas import AnalysisResult, JiraIssue, JiraTicketContent
-from services.jira_service import JiraService
+from models.schemas import JiraIssue, JiraTicketContent, IssueType
+from services.jira_service import get_jira_service
 from utils.logger import logger
 
 async def jira_create_issue_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,10 +35,22 @@ async def jira_create_issue_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
     
     try:
         # Create JiraTicketContent from the data
+        issue_type_str = jira_ticket_data.get("issue_type", "Bug")
+        if isinstance(issue_type_str, str):
+            issue_type_map = {
+                'bug': IssueType.BUG,
+                'task': IssueType.TASK,
+                'story': IssueType.STORY,
+                'epic': IssueType.EPIC
+            }
+            issue_type = issue_type_map.get(issue_type_str.lower(), IssueType.BUG)
+        else:
+            issue_type = issue_type_str
+            
         jira_ticket = JiraTicketContent(
             title=jira_ticket_data.get("title"),
             description=jira_ticket_data.get("description"),
-            issue_type=jira_ticket_data.get("issue_type", "Bug"),
+            issue_type=issue_type,
             priority=jira_ticket_data.get("priority", "Medium"),
             labels=jira_ticket_data.get("labels", []),
             components=jira_ticket_data.get("components", []),
@@ -62,35 +74,48 @@ async def jira_create_issue_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Invalid Jira ticket format: {str(e)}")
     
     # Create the issue in Jira
-    jira_service = JiraService()
+    jira_service = get_jira_service()
     
     try:
-        # Format the description with rich ADF content
-        formatted_description = _format_jira_description(jira_ticket, metadata)
+        # Use plain text description instead of ADF to avoid format issues
+        plain_description = _format_plain_description(jira_ticket, metadata)
         
-        # Create the issue
+        # Create the issue with only standard fields
         issue_data = {
             "project": {"key": project_key},
             "summary": jira_ticket.title,
-            "description": formatted_description,
-            "issuetype": {"name": jira_ticket.issue_type},
-            "priority": {"name": jira_ticket.priority},
-            "labels": jira_ticket.labels,
-            "components": [{"name": comp} for comp in jira_ticket.components] if jira_ticket.components else []
+            "description": plain_description,
+            "issuetype": {"name": jira_ticket.issue_type.value},
+            "labels": jira_ticket.labels
         }
         
-        # Add custom fields if available
-        if jira_ticket.acceptance_criteria:
-            issue_data["customfield_10001"] = _format_acceptance_criteria(jira_ticket.acceptance_criteria)
+        # Try to add priority - skip if it causes issues
+        try:
+            # Map priority names to common Jira priority IDs
+            priority_map = {
+                "Critical": "1",
+                "High": "2", 
+                "Medium": "3",
+                "Low": "4"
+            }
+            
+            if jira_ticket.priority in priority_map:
+                issue_data["priority"] = {"id": priority_map[jira_ticket.priority]}
+            else:
+                # Fallback to name format
+                issue_data["priority"] = {"name": jira_ticket.priority}
+        except:
+            # Skip priority if it causes issues
+            logger.warning(f"Skipping priority field due to format issues")
         
-        if metadata.get("estimated_effort"):
-            issue_data["customfield_10002"] = metadata["estimated_effort"]
-        
-        if metadata.get("suggested_assignee"):
-            issue_data["assignee"] = {"name": metadata["suggested_assignee"]}
+        # Only add optional fields if they exist in the project schema
+        # Skip components and custom fields for now to avoid field errors
         
         # Create the issue
         created_issue = await jira_service.create_issue(issue_data, user_id)
+        
+        if not created_issue:
+            raise Exception("Jira service returned None - issue creation failed")
         
         # Log the routing decision for analysis
         logger.info(f"Issue created using model: {metadata.get('routing_metadata', {}).get('selected_model')}")
@@ -100,11 +125,11 @@ async def jira_create_issue_tool(arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "key": created_issue.key,
             "id": created_issue.id,
-            "url": f"https://your-domain.atlassian.net/browse/{created_issue.key}",
-            "status": "Open",
-            "created_at": datetime.now().isoformat(),
+            "url": created_issue.url,
+            "status": created_issue.status,
+            "created_at": created_issue.created_at.isoformat(),
             "project_key": project_key,
-            "issue_type": jira_ticket.issue_type,
+            "issue_type": jira_ticket.issue_type.value,
             "priority": jira_ticket.priority,
             "confidence_score": metadata.get("confidence_score"),
             "estimated_effort": metadata.get("estimated_effort")
@@ -149,6 +174,29 @@ def _format_jira_description(ticket: JiraTicketContent, metadata: Dict[str, Any]
                 "content": [{"type": "text", "text": str(ticket.technical_details)}]
             }
         ])
+    
+    # Add acceptance criteria if available
+    if ticket.acceptance_criteria:
+        adf_content["content"].append({
+            "type": "heading",
+            "attrs": {"level": 2},
+            "content": [{"type": "text", "text": "Acceptance Criteria"}]
+        })
+        
+        criteria_list = []
+        for criterion in ticket.acceptance_criteria:
+            criteria_list.append({
+                "type": "listItem",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": criterion}]
+                }]
+            })
+        
+        adf_content["content"].append({
+            "type": "bulletList",
+            "content": criteria_list
+        })
     
     # Add steps to reproduce if available
     if ticket.steps_to_reproduce:
@@ -209,6 +257,54 @@ def _format_jira_description(ticket: JiraTicketContent, metadata: Dict[str, Any]
         ])
     
     return adf_content
+
+def _format_plain_description(ticket: JiraTicketContent, metadata: Dict[str, Any]) -> str:
+    """
+    Formats the description as plain text for Jira compatibility.
+    """
+    description_parts = []
+    
+    # Main description
+    description_parts.append("## Issue Description")
+    description_parts.append(ticket.description)
+    description_parts.append("")
+    
+    # Technical details
+    if ticket.technical_details:
+        description_parts.append("## Technical Details")
+        description_parts.append(f"```\n{str(ticket.technical_details)}\n```")
+        description_parts.append("")
+    
+    # Acceptance criteria
+    if ticket.acceptance_criteria:
+        description_parts.append("## Acceptance Criteria")
+        for i, criterion in enumerate(ticket.acceptance_criteria, 1):
+            description_parts.append(f"{i}. {criterion}")
+        description_parts.append("")
+    
+    # Steps to reproduce
+    if ticket.steps_to_reproduce:
+        description_parts.append("## Steps to Reproduce")
+        for i, step in enumerate(ticket.steps_to_reproduce, 1):
+            description_parts.append(f"{i}. {step}")
+        description_parts.append("")
+    
+    # Expected vs actual behavior
+    if ticket.expected_behavior and ticket.actual_behavior:
+        description_parts.append("### Expected Behavior")
+        description_parts.append(ticket.expected_behavior)
+        description_parts.append("")
+        description_parts.append("### Actual Behavior")
+        description_parts.append(ticket.actual_behavior)
+        description_parts.append("")
+    
+    # Metadata footer
+    if metadata.get("routing_metadata"):
+        routing = metadata["routing_metadata"]
+        description_parts.append("---")
+        description_parts.append(f"*Analysis Confidence: {metadata.get('confidence_score', 0):.1%} | Model: {routing.get('selected_model', 'Unknown')} | Cost: ${routing.get('estimated_cost', 0):.4f}*")
+    
+    return "\n".join(description_parts)
 
 def _format_acceptance_criteria(criteria: list) -> str:
     """
