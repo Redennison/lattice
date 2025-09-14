@@ -22,17 +22,33 @@ class GitHubService:
     """Initialize GitHub client with API token."""
     self.token = os.getenv("GITHUB_TOKEN")
     if not self.token:
-      raise ValueError("GITHUB_TOKEN environment variable is required")
+      print("Warning: GITHUB_TOKEN not set - GitHub operations will be disabled")
+      self.client = None
+    else:
+      self.client = Github(self.token)
     
     self.client = Github(self.token)
-    self.repo_owner = os.getenv("GITHUB_REPO_OWNER")
-    self.repo_name = os.getenv("GITHUB_REPO_NAME")
+    
+    # Handle both formats: GITHUB_REPO=owner/repo or separate GITHUB_REPO_OWNER/NAME
+    github_repo = os.getenv("GITHUB_REPO")
+    if github_repo and "/" in github_repo:
+      self.repo_owner, self.repo_name = github_repo.split("/", 1)
+    else:
+      self.repo_owner = os.getenv("GITHUB_REPO_OWNER")
+      self.repo_name = os.getenv("GITHUB_REPO_NAME")
     
     if not self.repo_owner or not self.repo_name:
-      raise ValueError("GITHUB_REPO_OWNER and GITHUB_REPO_NAME environment variables are required")
+      raise ValueError("GITHUB_REPO (format: owner/repo) or GITHUB_REPO_OWNER and GITHUB_REPO_NAME environment variables are required")
     
-    self.repo = self.client.get_repo(f"{self.repo_owner}/{self.repo_name}")
-    logger.info(f"GitHub service initialized for {self.repo_owner}/{self.repo_name}")
+    if self.client:
+      try:
+        self.repo = self.client.get_repo(f"{self.repo_owner}/{self.repo_name}")
+        logger.info(f"GitHub service initialized for {self.repo_owner}/{self.repo_name}")
+      except Exception as e:
+        print(f"Warning: Could not initialize GitHub repo: {e}")
+        self.repo = None
+    else:
+      self.repo = None
   
   async def search_files(self, queries: List[str], extensions: List[str] = None) -> List[CodeFile]:
     """
@@ -191,13 +207,65 @@ class GitHubService:
       logger.error(f"Failed to create branch '{branch_name}': {str(e)}")
       return False
   
+  async def create_file(self, branch_name: str, file_path: str, content: str, commit_message: str) -> bool:
+    """Create a new file in the repository."""
+    try:
+      self.repo.create_file(
+        path=file_path,
+        message=commit_message,
+        content=content,
+        branch=branch_name
+      )
+      logger.info(f"Created file '{file_path}' in branch '{branch_name}'")
+      return True
+    except Exception as e:
+      logger.error(f"Failed to create file '{file_path}': {str(e)}")
+      return False
+  
+  async def update_file(self, branch_name: str, file_path: str, content: str, commit_message: str) -> bool:
+    """Update an existing file in the repository."""
+    try:
+      # Get existing file to get its SHA
+      existing_file = self.repo.get_contents(file_path, ref=branch_name)
+      
+      self.repo.update_file(
+        path=file_path,
+        message=commit_message,
+        content=content,
+        sha=existing_file.sha,
+        branch=branch_name
+      )
+      logger.info(f"Updated file '{file_path}' in branch '{branch_name}'")
+      return True
+    except Exception as e:
+      logger.error(f"Failed to update file '{file_path}': {str(e)}")
+      return False
+  
+  async def delete_file(self, branch_name: str, file_path: str, commit_message: str) -> bool:
+    """Delete a file from the repository."""
+    try:
+      # Get existing file to get its SHA
+      existing_file = self.repo.get_contents(file_path, ref=branch_name)
+      
+      self.repo.delete_file(
+        path=file_path,
+        message=commit_message,
+        sha=existing_file.sha,
+        branch=branch_name
+      )
+      logger.info(f"Deleted file '{file_path}' from branch '{branch_name}'")
+      return True
+    except Exception as e:
+      logger.error(f"Failed to delete file '{file_path}': {str(e)}")
+      return False
+  
   async def apply_changes(self, branch_name: str, file_changes: List[Dict[str, str]], commit_message: str) -> bool:
     """
     Apply file changes to a branch.
     
     Args:
       branch_name: Target branch name
-      file_changes: List of dicts with 'path' and 'content' keys
+      file_changes: List of dicts with 'path', 'old_content', 'new_content' keys
       commit_message: Commit message
     
     Returns:
@@ -209,17 +277,28 @@ class GitHubService:
       
       for change in file_changes:
         file_path = change['path']
-        new_content = change['content']
+        old_content = change.get('old_content', '')
+        new_content = change.get('new_content', '')
         
         try:
           # Try to get existing file
           existing_file = self.repo.get_contents(file_path, ref=branch_name)
+          current_content = existing_file.decoded_content.decode('utf-8')
+          
+          # Apply targeted replacement if old_content is specified
+          if old_content and old_content in current_content:
+            updated_content = current_content.replace(old_content, new_content)
+            logger.info(f"Applying targeted change to {file_path}: replacing {len(old_content)} chars with {len(new_content)} chars")
+          else:
+            # Fallback to full replacement (for backward compatibility)
+            updated_content = new_content
+            logger.warning(f"Could not find old_content in {file_path}, replacing entire file")
           
           # Update existing file
           self.repo.update_file(
             path=file_path,
             message=commit_message,
-            content=new_content,
+            content=updated_content,
             sha=existing_file.sha,
             branch=branch_name
           )
@@ -276,5 +355,12 @@ class GitHubService:
       logger.error(f"Failed to create pull request: {str(e)}")
       return None
 
-# Global service instance
-github_service = GitHubService()
+# Global service instance (lazy initialization)
+github_service = None
+
+def get_github_service():
+  """Get or create GitHub service instance."""
+  global github_service
+  if github_service is None:
+    github_service = GitHubService()
+  return github_service

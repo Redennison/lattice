@@ -4,8 +4,8 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 
-from .config import SLACK_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET
-from .handlers import handle_app_mention
+from config import SLACK_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET
+from handlers import handle_app_mention
 
 # Create SSL context with proper certificate verification
 ssl_context = ssl.create_default_context(cafile=certifi.where())
