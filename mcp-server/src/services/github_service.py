@@ -22,7 +22,10 @@ class GitHubService:
     """Initialize GitHub client with API token."""
     self.token = os.getenv("GITHUB_TOKEN")
     if not self.token:
-      raise ValueError("GITHUB_TOKEN environment variable is required")
+      print("Warning: GITHUB_TOKEN not set - GitHub operations will be disabled")
+      self.client = None
+    else:
+      self.client = Github(self.token)
     
     self.client = Github(self.token)
     
@@ -37,8 +40,15 @@ class GitHubService:
     if not self.repo_owner or not self.repo_name:
       raise ValueError("GITHUB_REPO (format: owner/repo) or GITHUB_REPO_OWNER and GITHUB_REPO_NAME environment variables are required")
     
-    self.repo = self.client.get_repo(f"{self.repo_owner}/{self.repo_name}")
-    logger.info(f"GitHub service initialized for {self.repo_owner}/{self.repo_name}")
+    if self.client:
+      try:
+        self.repo = self.client.get_repo(f"{self.repo_owner}/{self.repo_name}")
+        logger.info(f"GitHub service initialized for {self.repo_owner}/{self.repo_name}")
+      except Exception as e:
+        print(f"Warning: Could not initialize GitHub repo: {e}")
+        self.repo = None
+    else:
+      self.repo = None
   
   async def search_files(self, queries: List[str], extensions: List[str] = None) -> List[CodeFile]:
     """
