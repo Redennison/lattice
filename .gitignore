@@ -2,7 +2,6 @@
 .env
 .env.*
 !.env.example
-.envs/
 
 # Python
 __pycache__/
@@ -37,11 +36,19 @@ ENV/
 *.swp
 *.swo
 
-# Logs
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs and databases
 *.log
+*.sql
+*.sqlite
 
-# Local development
+# OS generated files
 .DS_Store
-
-# Local configuration
-config.local.*
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

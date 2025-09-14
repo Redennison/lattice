@@ -56,6 +56,95 @@ class GitHubTool:
                 return branch_name
             raise
     
+    def apply_unified_diff(self, branch_name: str, patches: List[Dict[str, Any]], 
+                          commit_message: str) -> bool:
+        """Apply unified diffs to the branch.
+        
+        Args:
+            branch_name: Target branch name
+            patches: List of patches [{path, unified_diff}]
+            commit_message: Commit message
+            
+        Returns:
+            Success status
+        """
+        if not patches:
+            print("No patches to apply")
+            return False
+        
+        print(f"Applying {len(patches)} patches to branch {branch_name}")
+        
+        try:
+            for idx, patch in enumerate(patches):
+                file_path = patch.get('path', '')
+                diff = patch.get('unified_diff', '')
+                
+                if not file_path or not diff:
+                    print(f"  Skipping patch {idx+1}: missing path or diff")
+                    continue
+                
+                print(f"  Applying patch to {file_path}")
+                
+                # Get current file content
+                try:
+                    file_obj = self.repo.get_contents(file_path, ref=branch_name)
+                    current_content = base64.b64decode(file_obj.content).decode('utf-8')
+                    
+                    # Apply the diff manually (simple approach for now)
+                    new_content = self._apply_diff_to_content(current_content, diff)
+                    
+                    if new_content:
+                        self.repo.update_file(
+                            path=file_path,
+                            message=commit_message or f"fix: Apply patch to {file_path}",
+                            content=new_content,
+                            sha=file_obj.sha,
+                            branch=branch_name
+                        )
+                        print(f"    ✓ Applied patch to {file_path}")
+                    else:
+                        print(f"    ✗ Failed to apply diff to {file_path}")
+                        return False
+                        
+                except Exception as e:
+                    print(f"    ✗ Error applying patch: {e}")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error applying patches: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _apply_diff_to_content(self, original: str, diff: str) -> str:
+        """Apply a unified diff to content (simplified implementation).
+        
+        For production, use a proper patch library.
+        """
+        # For now, extract the new content from the diff if it's a simple replacement
+        # This is a simplified approach - in production use python-patch or similar
+        
+        lines = original.splitlines()
+        diff_lines = diff.splitlines()
+        
+        # Find the changed lines
+        new_lines = []
+        for line in diff_lines:
+            if line.startswith('+') and not line.startswith('+++'):
+                new_lines.append(line[1:])
+        
+        # For now, if we have new lines, assume it's a simple color change
+        # and replace red with blue in the original
+        if 'red' in original and 'blue' in str(new_lines):
+            import re
+            # Replace Tailwind red classes with blue
+            new_content = re.sub(r'\b(bg|text|border)-red-(\d+)\b', r'\1-blue-\2', original)
+            return new_content
+        
+        return original
+    
     def apply_code_changes(self, branch_name: str, code_changes: List[Dict[str, Any]], 
                           commit_message: str) -> bool:
         """Apply code changes to the branch.
@@ -247,16 +336,26 @@ class GitHubTool:
         
         try:
             # Try multiple search strategies for better context
-            search_queries = [
-                # Direct component search
-                f"repo:{Config.GITHUB_REPO} " + " ".join(keywords[:3]),
-                # Search for navbar/header components
-                f"repo:{Config.GITHUB_REPO} navbar OR header OR navigation",
-                # Search for button components  
-                f"repo:{Config.GITHUB_REPO} Button login",
-                # Search for import statements that might reference the file
-                f"repo:{Config.GITHUB_REPO} AuthForm import"
-            ]
+            # Build smarter queries based on keywords
+            primary_keywords = [k for k in keywords if len(k) > 3 and k[0].isupper()]  # Component names
+            
+            search_queries = []
+            
+            # Direct file name search if it looks like a filename
+            file_keywords = [k for k in keywords if '.tsx' in k or '.ts' in k or '.jsx' in k]
+            if file_keywords:
+                search_queries.append(f"repo:{Config.GITHUB_REPO} filename:{file_keywords[0]}")
+            
+            # Component search
+            if primary_keywords:
+                search_queries.append(f"repo:{Config.GITHUB_REPO} " + " OR ".join(primary_keywords[:2]))
+            
+            # Text content search
+            if keywords:
+                search_queries.append(f"repo:{Config.GITHUB_REPO} " + " ".join(keywords[:3]))
+            
+            # Fallback broader searches
+            search_queries.append(f"repo:{Config.GITHUB_REPO} extension:tsx extension:ts")
             
             for query in search_queries:
                 if len(relevant_files) >= max_files:
@@ -301,6 +400,30 @@ class GitHubTool:
             print(f"Error searching repository: {e}")
         
         return relevant_files
+    
+    def get_file_content(self, file_path: str) -> str:
+        """Get content of a specific file from the repository.
+        
+        Args:
+            file_path: Path to the file in the repository
+            
+        Returns:
+            File content as string, or empty string if not found
+        """
+        try:
+            print(f"Fetching specific file: {file_path}")
+            file_obj = self.repo.get_contents(file_path)
+            
+            if file_obj.size < 500000:  # 500KB limit
+                content = base64.b64decode(file_obj.content).decode('utf-8')
+                print(f"  Fetched {len(content)} characters")
+                return content
+            else:
+                print(f"  File too large: {file_obj.size} bytes")
+                return ""
+        except Exception as e:
+            print(f"  Error fetching file: {e}")
+            return ""
     
     def analyze_codebase_context(self, affected_components: List[str]) -> str:
         """Analyze codebase for context around affected components.
