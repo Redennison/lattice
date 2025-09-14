@@ -45,7 +45,7 @@ async def github_branch_and_pr_tool(arguments: Dict[str, Any]) -> Dict[str, Any]
     jira_url = jira_issue_data.get("url", "")
     
     # Initialize GitHub service
-    github_service = GitHubService(repo_url)
+    github_service = GitHubService()
     
     # Generate branch name
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -77,10 +77,15 @@ async def github_branch_and_pr_tool(arguments: Dict[str, Any]) -> Dict[str, Any]
                         f"Delete {change.file_path}: {change.description}"
                     )
                 else:  # modify
-                    await github_service.update_file(
+                    # Use apply_changes for targeted replacement
+                    file_changes = [{
+                        'path': change.file_path,
+                        'old_content': change.old_content,
+                        'new_content': change.new_content
+                    }]
+                    await github_service.apply_changes(
                         branch_name,
-                        change.file_path,
-                        change.new_content,
+                        file_changes,
                         f"Update {change.file_path}: {change.description}"
                     )
                 
@@ -112,12 +117,12 @@ async def github_branch_and_pr_tool(arguments: Dict[str, Any]) -> Dict[str, Any]
     if not pr_data:
         raise Exception("Failed to create pull request")
     
-    logger.info(f"Created PR #{pr_data['number']}: {pr_title}")
+    logger.info(f"Created PR #{pr_data.number}: {pr_title}")
     
     # Return PullRequest as dictionary
     return {
-        "pr_number": pr_data["number"],
-        "pr_url": pr_data["html_url"],
+        "pr_number": pr_data.number,
+        "pr_url": pr_data.url,
         "branch_name": branch_name,
         "base_branch": base_branch,
         "title": pr_title,

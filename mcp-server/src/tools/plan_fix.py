@@ -109,6 +109,8 @@ async def _analyze_codebase(relevant_files: List[Dict[str, Any]], jira_ticket: D
         
         analysis["files"].append({
             "path": file_path,
+            "content": content,  # Preserve the actual file content
+            "language": file_info.get("language", "unknown"),
             "relevance_score": relevance_score,
             "patterns": patterns,
             "is_test": is_test,
@@ -196,9 +198,10 @@ async def _generate_fix_with_deimos(jira_ticket: Dict[str, Any], codebase_contex
     )
     
     # Parse the LLM response into FixPlan
-    fix_plan = _parse_fix_response(response, jira_ticket)
+    fix_plan = _parse_fix_response(response, jira_ticket, codebase_context)
     
-    logger.info(f"Fix generated using {response.selected_model} (cost: ${response.estimated_cost:.4f})")
+    cost_str = f"${response.estimated_cost:.4f}" if response.estimated_cost else "N/A"
+    logger.info(f"Fix generated using {response.selected_model} (cost: {cost_str})")
     
     return fix_plan
 
@@ -241,11 +244,24 @@ def _create_fix_generation_prompt(jira_ticket: Dict[str, Any], codebase_context:
     """
     Creates a comprehensive prompt for fix generation.
     """
-    # Extract relevant files info
+    # Extract relevant files info - ONLY show actual files found
     files_info = "\n".join([
         f"- {f['path']} (relevance: {f['relevance_score']:.2f}, patterns: {', '.join(f['patterns'])})"
         for f in codebase_context['files'][:10]  # Limit to top 10 files
     ])
+    
+    # Get list of actual file paths for validation
+    actual_file_paths = [f['path'] for f in codebase_context['files']]
+    
+    # Include full content of top 3 most relevant files
+    file_contents = ""
+    for f in codebase_context['files'][:3]:
+        file_contents += f"\n\n=== FILE: {f['path']} ===\n"
+        file_contents += f"Language: {f.get('language', 'unknown')}\n"
+        file_contents += f"Lines: {f.get('line_count', 0)}\n"
+        file_contents += "Content:\n```\n"
+        file_contents += f.get('content', '# No content available')[:10000]  # Limit to 10k chars per file
+        file_contents += "\n```"
     
     prompt = f"""
 You are a senior software engineer tasked with generating a fix for the following issue.
@@ -262,14 +278,20 @@ ACCEPTANCE CRITERIA:
 TECHNICAL DETAILS:
 {jira_ticket.get('technical_details', 'No technical details provided')}
 
-RELEVANT FILES IDENTIFIED:
+RELEVANT FILES IDENTIFIED (ONLY USE THESE FILES):
 {files_info}
+
+IMPORTANT: You MUST ONLY modify files from the list above. Do NOT create or modify any files that are not listed.
+The file paths must match EXACTLY as shown above.
 
 CODE PATTERNS FOUND:
 {', '.join(codebase_context['patterns_found'])}
 
 TEST COVERAGE:
 {len(codebase_context['test_coverage'])} test files found
+
+FILE CONTENTS TO ANALYZE AND MODIFY:
+{file_contents}
 
 Generate a fix plan with the following JSON structure:
 {{
@@ -279,8 +301,8 @@ Generate a fix plan with the following JSON structure:
         {{
             "file_path": "path/to/file",
             "change_type": "modify",
-            "old_content": "original code section",
-            "new_content": "fixed code section",
+            "old_content": "EXACT original code to be replaced (preserve formatting)",
+            "new_content": "COMPLETE replacement for that section (not the whole file!)",
             "line_start": 10,
             "line_end": 20,
             "description": "What this change does"
@@ -292,17 +314,23 @@ Generate a fix plan with the following JSON structure:
 }}
 
 IMPORTANT:
-1. Make minimal, focused changes that directly address the issue
-2. Include proper error handling and validation
-3. Consider edge cases and potential side effects
-4. Ensure backward compatibility
-5. Follow the existing code style and patterns
-6. Return ONLY valid JSON, no additional text
+1. You are viewing the FULL FILE CONTENT above - DO NOT replace the entire file!
+2. In "old_content": provide the EXACT code snippet you want to replace (copy it exactly from the file)
+3. In "new_content": provide ONLY the replacement for that specific section, NOT the whole file
+4. Make minimal, focused changes that directly address the issue
+5. Preserve all existing code that doesn't need to change
+6. Follow the existing code style and patterns
+7. Return ONLY valid JSON, no additional text
+
+EXAMPLE: If changing a button color in a 200-line file:
+- old_content: "background-color: red;"
+- new_content: "background-color: #0066cc;"
+NOT the entire 200 lines!
 """
     
     return prompt
 
-def _parse_fix_response(response: Any, jira_ticket: Dict[str, Any]) -> FixPlan:
+def _parse_fix_response(response: Any, jira_ticket: Dict[str, Any], codebase_context: Dict[str, Any] = None) -> FixPlan:
     """
     Parses the LLM response into a FixPlan object.
     """
@@ -310,11 +338,23 @@ def _parse_fix_response(response: Any, jira_ticket: Dict[str, Any]) -> FixPlan:
         import json
         fix_data = json.loads(response.response)
         
+        # Get list of actual file paths from codebase context
+        actual_file_paths = []
+        if codebase_context:
+            actual_file_paths = [f['path'] for f in codebase_context.get('files', [])]
+        
         # Convert to FixPlan
         changes = []
         for change_data in fix_data.get('changes', []):
+            file_path = change_data.get('file_path', '')
+            
+            # Validate that the file path exists in our actual files
+            if actual_file_paths and file_path not in actual_file_paths:
+                logger.warning(f"Skipping invalid file path: {file_path} (not in actual files)")
+                continue
+                
             changes.append(CodeChange(
-                file_path=change_data.get('file_path', ''),
+                file_path=file_path,
                 change_type=change_data.get('change_type', 'modify'),
                 old_content=change_data.get('old_content'),
                 new_content=change_data.get('new_content'),
