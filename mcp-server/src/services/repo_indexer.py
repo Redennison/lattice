@@ -82,9 +82,9 @@ class RepoIndexer:
         # Sort by relevance and limit results
         relevant_files.sort(key=lambda x: x['relevance_score'], reverse=True)
         
-        # If no files found, return mock data for demo
+        # If no files found, log warning but return empty list
         if not relevant_files:
-            relevant_files = self._get_mock_files(code_queries)
+            logger.warning(f"No files found matching queries: {code_queries}")
         
         return relevant_files[:max_files]
     
@@ -93,20 +93,17 @@ class RepoIndexer:
         Determines if a file should be skipped during indexing.
         """
         skip_patterns = [
-            'node_modules',
-            '__pycache__',
-            '.git',
-            '.venv',
-            'venv',
-            'dist',
-            'build',
-            '.pytest_cache',
-            'coverage',
-            '.nyc_output',
-            'test',
-            'tests',
-            'spec',
-            '__tests__'
+            '/node_modules/',
+            '/__pycache__/',
+            '/.git/',
+            '/.venv/',
+            '/venv/',
+            '/dist/',
+            '/build/',
+            '/.next/',  # Skip Next.js build output
+            '/.pytest_cache/',
+            '/coverage/',
+            '/.nyc_output/'
         ]
         
         path_str = str(file_path).lower()
@@ -152,93 +149,6 @@ class RepoIndexer:
         
         # Normalize score
         return min(1.0, score / max(1, len(queries)))
-    
-    def _get_mock_files(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """
-        Returns mock files for demo purposes when no real files are found.
-        """
-        mock_files = [
-            {
-                "path": "src/controllers/cart.js",
-                "content": """const express = require('express');
-const CartService = require('../services/cart');
-
-const router = express.Router();
-
-router.post('/checkout', async (req, res) => {
-  try {
-    const { cartId, items } = req.body;
-    // BUG: No null check for cartId
-    const result = await CartService.processCheckout(cartId, items);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-module.exports = router;""",
-                "language": "javascript",
-                "relevance_score": 0.8,
-                "size": 400,
-                "line_count": 17
-            },
-            {
-                "path": "src/services/cart.js",
-                "content": """class CartService {
-  static async processCheckout(cartId, items) {
-    // Process checkout logic
-    const cart = await Cart.findById(cartId);
-    if (!cart) {
-      throw new Error('Cart not found');
-    }
-    
-    // Calculate total
-    const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-    
-    // Process payment
-    const payment = await PaymentService.process(cartId, total);
-    
-    return { success: true, orderId: payment.orderId };
-  }
-}
-
-module.exports = CartService;""",
-                "language": "javascript",
-                "relevance_score": 0.7,
-                "size": 450,
-                "line_count": 19
-            },
-            {
-                "path": "src/models/cart.js",
-                "content": """const mongoose = require('mongoose');
-
-const cartSchema = new mongoose.Schema({
-  userId: { type: String, required: true },
-  items: [{
-    productId: String,
-    quantity: Number,
-    price: Number
-  }],
-  status: { type: String, default: 'active' },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('Cart', cartSchema);""",
-                "language": "javascript",
-                "relevance_score": 0.6,
-                "size": 380,
-                "line_count": 15
-            }
-        ]
-        
-        # Filter based on queries
-        filtered = []
-        for file in mock_files:
-            if any(q.lower() in file['path'].lower() or q.lower() in file['content'].lower() for q in queries):
-                filtered.append(file)
-        
-        return filtered if filtered else mock_files[:2]  # Return at least 2 files
     
     async def index_repository(self) -> Dict[str, Any]:
         """
