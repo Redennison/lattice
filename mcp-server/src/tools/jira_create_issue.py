@@ -260,51 +260,96 @@ def _format_jira_description(ticket: JiraTicketContent, metadata: Dict[str, Any]
 
 def _format_plain_description(ticket: JiraTicketContent, metadata: Dict[str, Any]) -> str:
     """
-    Formats the description as plain text for Jira compatibility.
+    Formats the description as well-structured text for Jira with proper spacing and formatting.
     """
     description_parts = []
     
-    # Main description
-    description_parts.append("## Issue Description")
+    # Main description with better formatting
+    description_parts.append("h2. Issue Description")
+    description_parts.append("")
     description_parts.append(ticket.description)
     description_parts.append("")
     
-    # Technical details
+    # Technical details with code formatting
     if ticket.technical_details:
-        description_parts.append("## Technical Details")
-        description_parts.append(f"```\n{str(ticket.technical_details)}\n```")
+        description_parts.append("h2. Technical Details")
         description_parts.append("")
+        
+        # Format technical details nicely
+        tech_details = ticket.technical_details
+        if isinstance(tech_details, dict):
+            if 'stack_trace' in tech_details:
+                description_parts.append("*Stack Trace:*")
+                description_parts.append("{code}")
+                description_parts.append(tech_details['stack_trace'])
+                description_parts.append("{code}")
+                description_parts.append("")
+            
+            if 'error_codes' in tech_details:
+                description_parts.append("*Error Codes:* " + ", ".join(tech_details['error_codes']))
+                description_parts.append("")
+            
+            if 'affected_files' in tech_details:
+                description_parts.append("*Affected Files:*")
+                for file in tech_details['affected_files']:
+                    description_parts.append(f"• {file}")
+                description_parts.append("")
+            
+            if 'affected_endpoints' in tech_details and tech_details['affected_endpoints']:
+                description_parts.append("*Affected Endpoints:*")
+                for endpoint in tech_details['affected_endpoints']:
+                    description_parts.append(f"• {endpoint}")
+                description_parts.append("")
+        else:
+            description_parts.append("{code}")
+            description_parts.append(str(tech_details))
+            description_parts.append("{code}")
+            description_parts.append("")
     
-    # Acceptance criteria
+    # Acceptance criteria with proper numbering
     if ticket.acceptance_criteria:
-        description_parts.append("## Acceptance Criteria")
+        description_parts.append("h2. Acceptance Criteria")
+        description_parts.append("")
         for i, criterion in enumerate(ticket.acceptance_criteria, 1):
-            description_parts.append(f"{i}. {criterion}")
+            description_parts.append(f"# {criterion}")
         description_parts.append("")
     
-    # Steps to reproduce
+    # Steps to reproduce with proper numbering
     if ticket.steps_to_reproduce:
-        description_parts.append("## Steps to Reproduce")
+        description_parts.append("h2. Steps to Reproduce")
+        description_parts.append("")
         for i, step in enumerate(ticket.steps_to_reproduce, 1):
-            description_parts.append(f"{i}. {step}")
+            # Clean up step text (remove numbering if already present)
+            clean_step = step.strip()
+            if clean_step.startswith(f"{i}."):
+                clean_step = clean_step[len(f"{i}."):].strip()
+            description_parts.append(f"# {clean_step}")
         description_parts.append("")
     
     # Expected vs actual behavior
     if ticket.expected_behavior and ticket.actual_behavior:
-        description_parts.append("### Expected Behavior")
+        description_parts.append("h3. Expected Behavior")
+        description_parts.append("")
         description_parts.append(ticket.expected_behavior)
         description_parts.append("")
-        description_parts.append("### Actual Behavior")
+        description_parts.append("h3. Actual Behavior")
+        description_parts.append("")
         description_parts.append(ticket.actual_behavior)
         description_parts.append("")
     
-    # Metadata footer
+    # Metadata footer with better formatting
     if metadata.get("routing_metadata"):
         routing = metadata["routing_metadata"]
-        description_parts.append("---")
-        description_parts.append(f"*Analysis Confidence: {metadata.get('confidence_score', 0):.1%} | Model: {routing.get('selected_model', 'Unknown')} | Cost: ${routing.get('estimated_cost', 0):.4f}*")
+        description_parts.append("----")
+        description_parts.append("")
+        confidence = metadata.get('confidence_score', 0)
+        model = routing.get('selected_model', 'Unknown')
+        cost = routing.get('estimated_cost', 0)
+        description_parts.append(f"_Analysis Confidence: {confidence:.1%} | Model: {model} | Cost: ${cost:.4f}_")
     
-    return "\n".join(description_parts)
+    # Filter out None values before joining
+    clean_parts = [part for part in description_parts if part is not None]
+    return "\n".join(clean_parts)
 
 def _format_acceptance_criteria(criteria: list) -> str:
     """
