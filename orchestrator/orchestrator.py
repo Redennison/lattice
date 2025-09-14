@@ -4,14 +4,18 @@ Main orchestrator for coordinating LLM and MCP server interactions
 
 import asyncio
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+from dotenv import load_dotenv
 import cohere
 from .mcp_client import MCPClient
+
+# Load .env from the root directory
+load_dotenv('../lattice/.env')
 
 class Orchestrator:
     """Orchestrates LLM interactions with MCP server tools"""
     
-    def __init__(self, mcp_server_path: str = "../mcp-server/src/server.py"):
+    def __init__(self, mcp_server_path: str = "/Users/Evan/lattice/mcp-server/src/server.py"):
         self.cohere_client = cohere.Client()
         self.mcp_client = MCPClient(mcp_server_path)
         
@@ -28,29 +32,32 @@ class Orchestrator:
             Response text to send back to Slack
         """
         
-        # Step 1: Use LLM to analyze the request and determine what tools to use
-        analysis_prompt = f"""
-        Analyze this Slack message and determine what actions should be taken:
-        
-        Message: {text}
-        User: {user_id}
-        Channel: {channel_id}
-        
-        Available MCP tools:
-        - analyze_request: Analyze and extract structured ticket information
-        - plan_fix: Create technical fix plans
-        - jira_create_issue: Create Jira tickets
-        - github_branch_and_pr: Create branches and PRs
-        
-        Respond with a JSON object indicating:
-        1. What the user is asking for
-        2. Which tools should be called and in what order
-        3. Any parameters needed for the tools
-        
-        If this is just a general question or greeting, indicate no tools are needed.
-        """
-        
         try:
+            # Step 1: Discover available tools from MCP server
+            print("🔍 Discovering available MCP tools...")
+            available_tools = await self.mcp_client.list_tools()
+            print(f"📋 Available tools: {available_tools}")
+            
+            # Step 2: Use LLM to analyze the request and determine what tools to use
+            tools_description = self._format_tools_for_llm(available_tools)
+            analysis_prompt = f"""
+            Analyze this Slack message and determine what actions should be taken:
+            
+            Message: {text}
+            User: {user_id}
+            Channel: {channel_id}
+            
+            Available MCP tools:
+            {tools_description}
+            
+            Respond with a JSON object indicating:
+            1. "user_intent": What the user is asking for
+            2. "tools_needed": List of tool names that should be called (empty if none needed)
+            3. "reasoning": Brief explanation of why these tools were selected
+            
+            If this is just a general question or greeting, set tools_needed to an empty list.
+            """
+            
             # Get LLM analysis
             analysis_response = self.cohere_client.chat(
                 model="command-r-plus",
@@ -58,16 +65,16 @@ class Orchestrator:
                 max_tokens=500
             )
             
-            # Parse the analysis (simplified - in production you'd want better parsing)
             analysis_text = analysis_response.text
+            print(f"🤖 LLM Analysis: {analysis_text}")
             
-            # Check if tools are needed
-            if "no tools" in analysis_text.lower() or "general" in analysis_text.lower():
+            # Parse the analysis to determine if tools are needed
+            if "tools_needed" in analysis_text and "[]" not in analysis_text:
+                # Tools are needed - execute MCP workflow
+                return await self._execute_mcp_workflow(text, user_id, channel_id, analysis_text, available_tools)
+            else:
                 # Simple conversational response
                 return await self._generate_conversational_response(text)
-            else:
-                # Use MCP tools for complex requests
-                return await self._execute_mcp_workflow(text, user_id, channel_id, analysis_text)
                 
         except Exception as e:
             return f"❌ Error processing request: {str(e)}"
@@ -84,7 +91,22 @@ class Orchestrator:
         
         return response.text
     
-    async def _execute_mcp_workflow(self, text: str, user_id: str, channel_id: str, analysis: str) -> str:
+    def _format_tools_for_llm(self, tools_response: Dict[str, Any]) -> str:
+        """Format available tools for LLM consumption"""
+        if not tools_response or "tools" not in tools_response:
+            return "No tools available"
+        
+        tools = tools_response["tools"]
+        formatted = []
+        
+        for tool in tools:
+            name = tool.get("name", "unknown")
+            description = tool.get("description", "No description")
+            formatted.append(f"- {name}: {description}")
+        
+        return "\n".join(formatted)
+    
+    async def _execute_mcp_workflow(self, text: str, user_id: str, channel_id: str, analysis: str, available_tools: Dict[str, Any]) -> str:
         """Execute MCP server workflow based on analysis"""
         
         try:
