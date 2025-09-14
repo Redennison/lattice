@@ -91,6 +91,11 @@ class MCPServer:
             
             # Extract keywords from bug report for code search
             keywords = self._extract_keywords(bug_report)
+            # Add file names from affected_components if they look like files
+            if isinstance(bug_report.get('affected_components'), str):
+                keywords.append(bug_report['affected_components'])
+            elif isinstance(bug_report.get('affected_components'), list):
+                keywords.extend(bug_report['affected_components'])
             print(f"Extracted keywords: {keywords}")
             
             # Get more files with complete content
@@ -124,23 +129,50 @@ class MCPServer:
                     import traceback
                     traceback.print_exc()
             
-            # Step 4: Generate code fix
-            print(f"🔧 Generating code fix...")
-            self._update_workflow(workflow_id, 'generating_fix')
+            # Step 4: Two-pass code fix generation
+            print(f"🔧 Locating change target...")
+            self._update_workflow(workflow_id, 'locating_target')
             
-            # Route to appropriate model for code generation
-            model = self.deimos.route_task('generate_code_fix', complexity='high')
+            # Pass A: Locate exact change location
+            location = self.cohere.locate_change_target(bug_report, code_context)
             
-            try:
-                fix = self.cohere.generate_code_fix(bug_report, code_context)
-            except Exception as e:
-                print(f"Error in generate_code_fix: {e}")
-                import traceback
-                traceback.print_exc()
-                raise
+            if not location or location.get('confidence', 0) < 0.6 or not location.get('targets'):
+                print(f"⚠️ Could not locate change target with confidence (got {location.get('confidence', 0)})")
+                fix = None
+            else:
+                print(f"📍 Located target with confidence {location['confidence']}")
+                
+                # Pass B: Generate minimal patch
+                print(f"🔧 Generating minimal patch...")
+                self._update_workflow(workflow_id, 'generating_patch')
+                
+                # Get the specific code slice for the target
+                target = location['targets'][0]
+                target_file = next((f for f in relevant_files if f['path'] == target['path']), None)
+                
+                # If file not in context, try to fetch it directly
+                if not target_file and target.get('path'):
+                    print(f"📥 Fetching target file: {target['path']}")
+                    try:
+                        fetched = self.github.get_file_content(target['path'])
+                        if fetched:
+                            target_file = {'path': target['path'], 'content': fetched}
+                            relevant_files.append(target_file)
+                    except Exception as e:
+                        print(f"Failed to fetch file: {e}")
+                
+                if target_file:
+                    fix = self.cohere.generate_small_patch(bug_report, target_file['content'], location)
+                    
+                    # Check confidence threshold
+                    if fix.get('confidence', 0) < 0.6:
+                        print(f"⚠️ Patch confidence too low: {fix.get('confidence', 0)}")
+                        fix = None
+                else:
+                    print(f"⚠️ Target file not found in context or repository")
+                    fix = None
             
-            if not fix or not fix.get('code_changes'):
-                print("⚠️ No automated fix could be generated")
+            if not fix:
                 fix = {
                     'root_cause': 'Manual analysis required',
                     'fix_description': 'This issue requires manual investigation',
@@ -159,42 +191,52 @@ class MCPServer:
             
             self._update_workflow(workflow_id, 'jira_ticket_created', {'issue_key': issue_key})
             
-            # Step 6: Create GitHub branch and PR (if we have code changes)
+            # Step 6: Create GitHub PR (if fix exists with patches)
             pr_url = None
-            if fix.get('code_changes'):
+            if fix and fix.get('patches'):
                 print(f"🌿 Creating GitHub branch and PR...")
-                self._update_workflow(workflow_id, 'creating_github_pr')
+                self._update_workflow(workflow_id, 'creating_pr')
                 
-                try:
-                    # Create branch
-                    branch_name = self.github.create_fix_branch(issue_key, bug_report['title'])
-                    
-                    # Apply code changes
-                    commit_message = f"[{issue_key}] Fix: {bug_report['title']}"
-                    changes_applied = self.github.apply_code_changes(
-                        branch_name, 
-                        fix['code_changes'], 
-                        commit_message
+                # Create branch
+                branch_name = self.github.create_fix_branch(issue_key, bug_report['title'])
+                
+                # Apply patches using unified diff
+                if self.github.apply_unified_diff(branch_name, fix['patches'], fix.get('commit_message', f"Fix: {bug_report['title']}")):
+                    # Create PR
+                    pr_url = self.github.create_pull_request(
+                        branch_name=branch_name,
+                        issue_key=issue_key,
+                        bug_report=bug_report,
+                        fix=fix
                     )
                     
-                    if changes_applied:
-                        # Create PR
-                        pr_url = self.github.create_pull_request(
-                            branch_name, 
-                            issue_key, 
-                            bug_report, 
-                            fix
-                        )
+                    if pr_url:
                         print(f"✅ Created PR: {pr_url}")
-                        
-                        # Update Jira with PR link
-                        self.jira.update_issue_with_pr(issue_key, pr_url)
-                        
-                        self._update_workflow(workflow_id, 'github_pr_created', {'pr_url': pr_url})
+                        # Link PR to Jira  
+                        self.jira.add_comment(issue_key, f"🔗 Pull Request created: {pr_url}")
+                        self._update_workflow(workflow_id, 'pr_created', {'pr_url': pr_url})
+                    else:
+                        print(f"❌ Failed to create PR")
+                        self._update_workflow(workflow_id, 'pr_failed')
+            elif fix and fix.get('code_changes'):
+                # Fallback to old method if using old format
+                print(f"🌿 Creating GitHub branch and PR (legacy mode)...")
+                self._update_workflow(workflow_id, 'creating_pr')
+                
+                branch_name = self.github.create_fix_branch(issue_key, bug_report['title'])
+                
+                if self.github.apply_code_changes(branch_name, fix['code_changes'], f"Fix: {bug_report['title']}"):
+                    pr_url = self.github.create_pull_request(
+                        branch_name=branch_name,
+                        issue_key=issue_key,
+                        bug_report=bug_report,
+                        fix=fix
+                    )
                     
-                except Exception as e:
-                    print(f"⚠️ Failed to create PR: {e}")
-                    self.jira.add_comment(issue_key, f"⚠️ Automated PR creation failed: {str(e)}")
+                    if pr_url:
+                        print(f"✅ Created PR: {pr_url}")
+                        self.jira.add_comment(issue_key, f"🔗 Pull Request created: {pr_url}")
+                        self._update_workflow(workflow_id, 'pr_created', {'pr_url': pr_url})
             else:
                 self.jira.add_comment(issue_key, 
                     "ℹ️ No automated fix generated. Manual investigation required.")

@@ -1,20 +1,54 @@
-# Ignore all environment files
-*.env
-**/*.env
+# Environment variables
+.env
+.env.*
+!.env.example
 
-# Ignore Python cache
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Ignore virtual environments
-.venv/
+# Virtual Environment
 venv/
 env/
+ENV/
 
-# Ignore build / packaging artifacts
-build/
-dist/
-*.egg-info/
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

@@ -1,9 +1,10 @@
 """Cohere LLM service for text processing."""
 
 import cohere
-from typing import Dict, Any, Optional, List
-from config import Config
+from typing import Dict, Any, List, Tuple
 import json
+from config import Config
+import re
 
 class CohereService:
     """Service for interacting with Cohere API."""
@@ -106,23 +107,27 @@ Return as JSON with these exact keys: title, description, steps_to_reproduce, ex
             Generated fix with explanation
         """
         # Build prompt WITHOUT f-string to avoid code_context causing issues
-        prompt = """You are a senior software engineer fixing a bug or making a code change. Based on the request and COMPLETE file context provided, generate the fix.
+        prompt = """You are a senior software engineer. You must modify the file to fix the issue.
 
 Request:
 Title: """ + str(bug_report.get('title', 'Change Request')) + """
 Description: """ + str(bug_report.get('description', '')) + """
-Affected Components: """ + ', '.join(bug_report.get('affected_components', [])) + """
-Severity: """ + str(bug_report.get('severity', 'Medium')) + """
+Task: """ + str(bug_report.get('additional_context', '')) + """
 
-COMPLETE Code Files (these are the ENTIRE files):
+FILES PROVIDED BELOW (COMPLETE CONTENT):
 """ + code_context[:15000] + """
 
-CRITICAL INSTRUCTIONS:
-1. You have been given COMPLETE file contents above
-2. For the 'changes' field, provide the ENTIRE modified file with your changes applied
-3. Keep ALL existing code/imports/structure intact
-4. Only modify the specific parts needed (e.g., change button color from red to blue)
-5. The file you return MUST be valid and runnable
+CRITICAL REQUIREMENTS:
+1. The above shows COMPLETE files - every line, every import, everything
+2. In your response, for the 'changes' field, copy the ENTIRE file and make ONLY the requested change
+3. DO NOT abbreviate, truncate, or use "..." anywhere
+4. DO NOT add new imports unless absolutely necessary
+5. DO NOT change any existing logic except what's requested
+6. For Tailwind CSS color changes:
+   - Change from red classes (bg-red-*, text-red-*, border-red-*) 
+   - To blue classes (bg-blue-*, text-blue-*, border-blue-*)
+   - Keep the same shade number (e.g., red-500 → blue-500)
+7. The file MUST compile - keep all TypeScript types, all imports, all exports exactly as they are
 
 Generate a JSON response with:
 - root_cause: Brief analysis of the issue
@@ -191,6 +196,165 @@ Return ONLY valid JSON. The 'changes' field must contain the COMPLETE file conte
             "code_changes": [],
             "testing_notes": "Test thoroughly before deployment"
         }
+    
+    def make_file_slices(self, full_text: str, target_lines: List[int], radius: int = 20) -> List[Tuple[str, int, int]]:
+        """Create focused file slices around target lines.
+        
+        Args:
+            full_text: Complete file content
+            target_lines: Line numbers to focus on
+            radius: Lines before/after to include
+            
+        Returns:
+            List of (snippet, start_line, end_line) tuples
+        """
+        lines = full_text.splitlines()
+        slices = []
+        
+        for line_num in target_lines:
+            start = max(0, line_num - radius)
+            end = min(len(lines), line_num + radius)
+            snippet = "\n".join(lines[start:end])
+            slices.append((snippet, start, end))
+        
+        return slices
+    
+    def locate_change_target(self, bug_report: Dict[str, Any], code_context: str) -> Dict[str, Any]:
+        """Pass A: Locate the exact file and region to change.
+        
+        Args:
+            bug_report: Structured bug report
+            code_context: Relevant code slices
+            
+        Returns:
+            Target location with confidence score
+        """
+        prompt = """You are a code analysis expert. Your ONLY task is to locate the exact code region to fix.
+
+Bug Report:
+Title: """ + str(bug_report.get('title', '')) + """
+Description: """ + str(bug_report.get('description', '')) + """
+Expected: """ + str(bug_report.get('expected_behavior', '')) + """
+Actual: """ + str(bug_report.get('actual_behavior', '')) + """
+
+Code Context (file slices):
+""" + code_context[:8000] + """
+
+CRITICAL RULES:
+1. Choose exactly ONE file and region
+2. Find unique anchor strings that appear verbatim in the code
+3. The anchors should bracket the EXACT area needing change
+4. Return JSON ONLY, no other text
+
+Return JSON:
+{
+  "targets": [{
+    "path": "exact/file/path.tsx",
+    "anchor_before": "exact text before the change area",
+    "anchor_after": "exact text after the change area",
+    "reason": "why this is the right location"
+  }],
+  "confidence": 0.0-1.0
+}"""
+
+        print("COHERE locate_change_target: Sending request...")
+        try:
+            response = self.client.generate(
+                prompt=prompt,
+                model='command-r-plus',
+                temperature=0.1,
+                max_tokens=1000
+            )
+            
+            text = response.generations[0].text.strip()
+            print(f"COHERE locate_change_target response: {text[:300]}...")
+            
+            if '{' in text and '}' in text:
+                json_str = text[text.index('{'):text.rindex('}')+1]
+                result = json.loads(json_str)
+                print(f"Located target: {result.get('targets', [])[:1]}, confidence: {result.get('confidence', 0)}")
+                return result
+        except Exception as e:
+            print(f"COHERE locate_change_target ERROR: {e}")
+        
+        return {"targets": [], "confidence": 0.0}
+    
+    def generate_small_patch(self, bug_report: Dict[str, Any], code_slice: str, location: Dict[str, Any]) -> Dict[str, Any]:
+        """Pass B: Generate minimal unified diff for the located target.
+        
+        Args:
+            bug_report: Structured bug report
+            code_slice: The specific code region to edit
+            location: Target location from Pass A
+            
+        Returns:
+            Patch with unified diff and confidence
+        """
+        if not location.get('targets'):
+            return {"patches": [], "confidence": 0.0}
+        
+        target = location['targets'][0]
+        
+        prompt = """You are a precise code editor. Generate a MINIMAL unified diff to fix the issue.
+
+Target File: """ + target['path'] + """
+Reason for Change: """ + target['reason'] + """
+
+Original Code Region:
+""" + code_slice + """
+
+Change Required:
+""" + bug_report.get('description', '') + """
+
+For Tailwind color changes:
+- Change red classes (bg-red-*, text-red-*, border-red-*) to blue equivalents
+- Keep the same shade number (e.g., red-500 → blue-500)
+
+RULES:
+1. Generate a unified diff (git format)
+2. Change ≤ 15 lines total
+3. Keep all imports, types, and structure intact
+4. Only change what's necessary for the fix
+5. The diff must apply cleanly
+
+Return JSON:
+{
+  "patches": [{
+    "path": "exact/file/path.tsx",
+    "unified_diff": "--- a/path\n+++ b/path\n@@ -linenum,count +linenum,count @@\n context line\n-old line\n+new line\n context line"
+  }],
+  "commit_message": "fix: concise description",
+  "confidence": 0.0-1.0
+}"""
+
+        print("COHERE generate_small_patch: Generating diff...")
+        try:
+            response = self.client.generate(
+                prompt=prompt,
+                model='command-r-plus',
+                temperature=0.05,  # Very low for consistency
+                max_tokens=2000
+            )
+            
+            text = response.generations[0].text.strip()
+            print(f"COHERE patch response preview: {text[:300]}...")
+            
+            if '{' in text and '}' in text:
+                json_str = text[text.index('{'):text.rindex('}')+1]
+                result = json.loads(json_str)
+                
+                # Count changed lines
+                if result.get('patches'):
+                    diff = result['patches'][0].get('unified_diff', '')
+                    changed = sum(1 for line in diff.split('\n') 
+                                if line.startswith('+') or line.startswith('-'))
+                    print(f"Generated patch with {changed} changed lines")
+                
+                return result
+        except Exception as e:
+            print(f"COHERE generate_small_patch ERROR: {e}")
+        
+        return {"patches": [], "confidence": 0.0}
     
     def summarize_for_pr(self, bug_report: Dict[str, Any], fix: Dict[str, Any]) -> str:
         """Generate PR description.
