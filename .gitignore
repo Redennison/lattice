@@ -1,0 +1,18 @@
+# Ignore all environment files
+*.env
+**/*.env
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore virtual environments
+.venv/
+venv/
+env/
+
+# Ignore build / packaging artifacts
+build/
+dist/
+*.egg-info/
