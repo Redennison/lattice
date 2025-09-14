@@ -133,8 +133,9 @@ class MCPServer:
             print(f"🔧 Locating change target...")
             self._update_workflow(workflow_id, 'locating_target')
             
-            # Pass A: Locate exact change location
-            location = self.cohere.locate_change_target(bug_report, code_context)
+            # Pass A: Locate exact change location using Deimos Router
+            print(f"🎯 Using Deimos Router for locating change target...")
+            location = self._locate_with_deimos(bug_report, code_context)
             
             if not location or location.get('confidence', 0) < 0.6 or not location.get('targets'):
                 print(f"⚠️ Could not locate change target with confidence (got {location.get('confidence', 0)})")
@@ -162,7 +163,8 @@ class MCPServer:
                         print(f"Failed to fetch file: {e}")
                 
                 if target_file:
-                    fix = self.cohere.generate_small_patch(bug_report, target_file['content'], location)
+                    print(f"🎯 Using Deimos Router for generating patch...")
+                    fix = self._generate_patch_with_deimos(bug_report, target_file['content'], location)
                     
                     # Check confidence threshold
                     if fix.get('confidence', 0) < 0.6:
@@ -269,6 +271,118 @@ class MCPServer:
                 'error': str(e),
                 'message': f"Failed to process bug report: {str(e)}"
             }
+    
+    def _locate_with_deimos(self, bug_report: Dict[str, Any], code_context: str) -> Dict[str, Any]:
+        """Use Deimos Router for locating change target.
+        
+        Args:
+            bug_report: Structured bug report
+            code_context: Relevant code from repository
+            
+        Returns:
+            Location information with confidence
+        """
+        # Build messages for Deimos routing
+        messages = [
+            {"role": "system", "content": "You are a code analysis expert. Locate the exact code region to fix."},
+            {"role": "user", "content": f"""Bug Report:
+Title: {bug_report.get('title', '')}
+Description: {bug_report.get('description', '')}
+Expected: {bug_report.get('expected_behavior', '')}
+Actual: {bug_report.get('actual_behavior', '')}
+
+Code Context:
+{code_context[:8000]}
+
+Find the exact file and region that needs to be changed. Return JSON with targets array containing path, anchor_before, anchor_after, and reason."""}
+        ]
+        
+        try:
+            # Route through Deimos for PR editing task
+            response = self.deimos.route_pr_edit_request(messages, task="locate_change_target")
+            
+            if hasattr(response, 'choices'):
+                text = response.choices[0].message.content.strip()
+            else:
+                text = str(response).strip()
+            
+            print(f"Deimos locate response preview: {text[:300]}...")
+            
+            # Parse JSON from response
+            if '{' in text and '}' in text:
+                json_str = text[text.index('{'):text.rindex('}')+1]
+                result = json.loads(json_str)
+                print(f"Located target via Deimos: {result.get('targets', [])[:1]}, confidence: {result.get('confidence', 0)}")
+                return result
+        except Exception as e:
+            print(f"Deimos routing failed for locate_change_target: {e}")
+            # Fallback to Cohere
+            print(f"Falling back to Cohere for location...")
+            return self.cohere.locate_change_target(bug_report, code_context)
+        
+        return {"targets": [], "confidence": 0.0}
+    
+    def _generate_patch_with_deimos(self, bug_report: Dict[str, Any], code_slice: str, location: Dict[str, Any]) -> Dict[str, Any]:
+        """Use Deimos Router for generating code patch.
+        
+        Args:
+            bug_report: Structured bug report  
+            code_slice: The specific code region to edit
+            location: Target location from Pass A
+            
+        Returns:
+            Patch with unified diff and confidence
+        """
+        if not location.get('targets'):
+            return {"patches": [], "confidence": 0.0}
+        
+        target = location['targets'][0]
+        
+        # Build messages for Deimos routing
+        messages = [
+            {"role": "system", "content": "You are a precise code editor. Generate a minimal unified diff to fix the issue."},
+            {"role": "user", "content": f"""Target File: {target['path']}
+Reason for Change: {target['reason']}
+
+Original Code:
+{code_slice}
+
+Change Required: {bug_report.get('description', '')}
+
+Generate a unified diff (git format) with minimal changes. Return JSON with patches array containing path and unified_diff, plus commit_message and confidence."""}
+        ]
+        
+        try:
+            # Route through Deimos for PR editing task
+            response = self.deimos.route_pr_edit_request(messages, task="generate_patch")
+            
+            if hasattr(response, 'choices'):
+                text = response.choices[0].message.content.strip()
+            else:
+                text = str(response).strip()
+            
+            print(f"Deimos patch response preview: {text[:300]}...")
+            
+            # Parse JSON from response
+            if '{' in text and '}' in text:
+                json_str = text[text.index('{'):text.rindex('}')+1]
+                result = json.loads(json_str)
+                
+                # Count changed lines
+                if result.get('patches'):
+                    diff = result['patches'][0].get('unified_diff', '')
+                    changed = sum(1 for line in diff.split('\n') 
+                                if line.startswith('+') or line.startswith('-'))
+                    print(f"Generated patch via Deimos with {changed} changed lines")
+                
+                return result
+        except Exception as e:
+            print(f"Deimos routing failed for generate_patch: {e}")
+            # Fallback to Cohere
+            print(f"Falling back to Cohere for patch generation...")
+            return self.cohere.generate_small_patch(bug_report, code_slice, location)
+        
+        return {"patches": [], "confidence": 0.0}
     
     def _extract_keywords(self, bug_report: Dict[str, Any]) -> List[str]:
         """Extract keywords from bug report for code search.
