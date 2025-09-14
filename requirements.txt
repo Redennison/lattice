@@ -1,0 +1,20 @@
+# Core dependencies
+slack-bolt==1.20.1
+slack-sdk==3.33.4
+mcp==1.0.0
+cohere==5.11.4
+PyGithub==2.5.0
+jira==3.8.0
+python-dotenv==1.0.1
+pydantic==2.10.3
+aiohttp==3.11.10
+requests==2.32.3
+
+# Deimos Router dependencies (local)
+# Install with: pip install -e ./deimos-router
+
+# Development dependencies
+pytest==8.3.4
+pytest-asyncio==0.25.0
+black==24.10.0
+flake8==7.1.1

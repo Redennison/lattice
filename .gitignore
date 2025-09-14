@@ -1,10 +1,47 @@
+# Environment variables
 .env
-.venv
-.env.example
-test_deimos_routing.py
-test_lattice_flow.py
-test_jira_priority.py
-secrets.json
-test_deimos_api.py
-*__pycache__
-logs
+.env.*
+!.env.example
+.envs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Local development
+.DS_Store
+
+# Local configuration
+config.local.*
