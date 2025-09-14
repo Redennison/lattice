@@ -1,11 +1,18 @@
-.env
-venv
-.env.example
-test_deimos_routing.py
-test_lattice_flow.py
-test_jira_priority.py
-test_jira_formatting.py
-secrets.json
-test_deimos_api.py
-*__pycache__
-logs
+# Ignore all environment files
+*.env
+**/*.env
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore virtual environments
+.venv/
+venv/
+env/
+
+# Ignore build / packaging artifacts
+build/
+dist/
+*.egg-info/
