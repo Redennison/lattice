@@ -92,7 +92,7 @@ class JiraIssue:
     """
     Created Jira issue details.
     """
-    key: str  # e.g., "PROJ-123"
+    key: str
     id: str
     url: str
     status: str

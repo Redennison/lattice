@@ -9,7 +9,7 @@ import os
 from typing import Optional, Dict, Any, List
 from atlassian import Jira
 
-from models.ticket import AnalysisResult, JiraIssue, AcceptanceCriteria
+from models.schemas import AnalysisResult, JiraIssue, JiraTicketContent
 from utils.logger import logger
 
 class JiraService:
@@ -17,13 +17,17 @@ class JiraService:
   
   def __init__(self):
     """Initialize Jira client with API credentials."""
-    self.url = os.getenv("JIRA_URL")
-    self.username = os.getenv("JIRA_USERNAME")
+    self.url = os.getenv("JIRA_BASE_URL")
+    self.username = os.getenv("JIRA_EMAIL")
     self.api_token = os.getenv("JIRA_API_TOKEN")
     self.project_key = os.getenv("JIRA_PROJECT_KEY")
     
     if not all([self.url, self.username, self.api_token, self.project_key]):
-      raise ValueError("Jira environment variables are required: JIRA_URL, JIRA_USERNAME, JIRA_API_TOKEN, JIRA_PROJECT_KEY")
+      raise ValueError("Jira environment variables are required: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY")
+    
+    # Ensure URL has proper scheme
+    if not self.url.startswith(('http://', 'https://')):
+      self.url = f"https://{self.url}"
     
     self.client = Jira(
       url=self.url,
@@ -34,33 +38,20 @@ class JiraService:
     
     logger.info(f"Jira service initialized for {self.url}")
   
-  async def create_issue(self, analysis: AnalysisResult, user_id: str = None) -> Optional[JiraIssue]:
+  async def create_issue(self, issue_data: Dict[str, Any], user_id: str = None) -> Optional[JiraIssue]:
     """
-    Create a Jira issue from analysis results.
+    Create a Jira issue from issue data.
     
     Args:
-      analysis: Analysis result from analyze_request tool
+      issue_data: Jira issue data dictionary
       user_id: Optional Slack user ID for assignment
     
     Returns:
       JiraIssue object if successful, None otherwise
     """
-    logger.info(f"Creating Jira issue: {analysis.title}")
+    logger.info(f"Creating Jira issue: {issue_data.get('summary', 'Unknown')}")
     
     try:
-      # Build issue description as plain text
-      description = self._build_description_text(analysis)
-      
-      # Prepare issue data
-      issue_data = {
-        "project": {"key": self.project_key},
-        "summary": analysis.title,
-        "description": description,
-        "issuetype": {"name": analysis.issue_type},
-        "priority": {"name": analysis.priority},
-        "labels": analysis.labels
-      }
-      
       # Add assignee if user mapping exists
       if user_id:
         assignee = self._map_slack_user_to_jira(user_id)
@@ -68,7 +59,20 @@ class JiraService:
           issue_data["assignee"] = {"accountId": assignee}
       
       # Create the issue
+      logger.info(f"Creating issue with data: {issue_data}")
+      
+      # Validate project exists before creating issue
+      try:
+        project_info = self.client.project(issue_data["project"]["key"])
+        logger.info(f"Project validated: {project_info.get('name', 'Unknown')}")
+      except Exception as project_error:
+        logger.error(f"Project validation failed: {project_error}")
+        raise Exception(f"Invalid project key '{issue_data['project']['key']}': {project_error}")
+      
       issue = self.client.create_issue(fields=issue_data)
+      
+      if not issue or "key" not in issue:
+        raise Exception("Jira API returned invalid response - no issue key")
       
       # Get issue details
       issue_key = issue["key"]
@@ -76,15 +80,18 @@ class JiraService:
       
       logger.info(f"Created Jira issue {issue_key}")
       
+      from datetime import datetime
       return JiraIssue(
         key=issue_key,
         url=issue_url,
-        id=issue["id"]
+        id=issue.get("id", issue_key),
+        status="Open",
+        created_at=datetime.now()
       )
     
     except Exception as e:
       logger.error(f"Failed to create Jira issue: {str(e)}")
-      return None
+      raise Exception(f"Jira issue creation failed: {str(e)}")
   
   def _build_description_text(self, analysis: AnalysisResult) -> str:
     """
@@ -308,5 +315,12 @@ class JiraService:
       logger.error(f"Failed to transition {issue_key}: {str(e)}")
       return False
 
-# Global service instance
-jira_service = JiraService()
+# Global service instance - initialized lazily
+jira_service = None
+
+def get_jira_service():
+    """Get or create the global Jira service instance."""
+    global jira_service
+    if jira_service is None:
+        jira_service = JiraService()
+    return jira_service
